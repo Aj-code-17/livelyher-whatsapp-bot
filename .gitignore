@@ -1,0 +1,14 @@
+# Secrets — NEVER upload these
+.env
+.env.local
+*.key
+
+# Runtime data (chat history SQLite db)
+conversations.db*
+*.db-journal
+
+# Python junk
+__pycache__/
+*.pyc
+.venv/
+venv/
