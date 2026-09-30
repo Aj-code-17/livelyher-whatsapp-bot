@@ -1,8 +1,8 @@
 """Livelyher — WhatsApp conversational CRM & intake bot.
 
 Receives WhatsApp Cloud API webhooks from Meta, walks each lead through a
-6-stage Roman-Urdu intake funnel (with LLM answer validation), waits 30
-minutes, then sends a personalized AI weight-loss coaching pitch.
+multi-stage Roman-Urdu intake funnel (with LLM answer validation), waits 30
+minutes, then executes a 16-step personalized AI consultative sales pitch.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
-from groq import Groq  # note: package name is lowercase
+from groq import Groq
 
 from bot.messenger import MetaClient
 
@@ -38,8 +38,9 @@ meta = MetaClient(
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "dev-verify-token")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 DB_PATH = os.getenv("DB_PATH", "conversations.db")
-# The model the client uses: Alibaba Qwen3.8-27B on Groq (preview tier).
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+
+# Model swapped to openai/gpt-oss-120b as requested
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 ANALYSIS_DELAY_MINUTES = float(os.getenv("ANALYSIS_DELAY_MINUTES", "30"))
 
 _groq_client = None
@@ -56,7 +57,7 @@ def groq() -> Groq:
     return _groq_client
 
 
-# ------------------------------------------------------------ conversation template
+# ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
 MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah!"
 SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) kitna hai, aur aapki Height kya hai?\n2. Ye weight gain kab shuru hua, shaadi ke baad, pregnancy/delivery ke baad, ya pichle 1–2 saalon mein achanak barha?\n3. Body mein stubborn weight sabse zyada kahan mehsoos hota hai — lower belly/stomach fat, hips/thighs, ya overall heavy bloating?"
@@ -65,10 +66,24 @@ SET_3 = "For Understanding your Mood and Stress Level:\n1. 1 se 10 ke scale par 
 MSG_END = "Thanks for sharing information Mam, we will analyse your situation and reach out to you in about 30 minutes.\n\nWe will explain you in detail your issue, why it is happening and how we can help you, and only once you are satisfied you can buy your Personalized plan, which will be delivered to you! 😇"
 MSG_WAIT = ("Perfect Ma'am! 😊 Our coaches are analysing your answers right now — "
             "we'll reach out to you shortly, Inshallah.")
-MSG_DONE = ("JazakAllah Ma'am! 😊 Our coach has already shared your analysis — "
-            "the livelyher team will reach out to you shortly.")
 INVALID_FALLBACK = ("Ma'am, could you please answer the questions above? 😊 "
                     "They help our coaches understand your situation properly.")
+
+# NEW PITCH TEMPLATES
+PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"
+PITCH_3 = "are you getting my point?"
+PITCH_5 = "Insha'Allah in 4 weeks you will share a visible difference in your condition because at livelyher we do a lot of hardwork to specifically design the plan as per your problem and routine takei aik to follow krna bht asaan ho aur real aur results milsakain"
+PITCH_6 = "I have read your routine we will just few changes in your diet aur saath aik tea aur kuch supplements bhi prescribe karain gei and specially mood plan usko must follow kijye ga it help a lot in lowering stress levels insha'Allah"
+PITCH_7 = "aap kuch light exercise agar suggest karain to karlain gi?"
+PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version..."
+PITCH_9 = "https://your-video-link-here.com/video.mp4" # <--- ADD YOUR VIDEO LINK HERE
+PITCH_10 = "let me know once you have seen it, I will share more details than .."
+PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah ☺️"
+PITCH_12 = "aur mam aapnej jo routine batayi hai, aapki meals exactly iskei according hun ya kuch changes mei karlun ismei ?"
+PITCH_13 = "okay, so I am finalising your spot because only 7 are left for this batch aur aaj yeh close hojaye ga...."
+PITCH_14 = "mei nei bohat detailed aur time laga ker analysis already krlia hai ....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan... should I send you the questions?"
+PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."
+PITCH_16 = "For payment you can use following accounts:\n\nBank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher" # <--- ADD BANK DETAILS HERE
 
 
 # ------------------------------------------------------------ database
@@ -105,29 +120,13 @@ def check_scheduled_analyses() -> None:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         cursor.execute(
-            "SELECT user_phone, bot_phone_id, answers_1, answers_2, answers_3 "
+            "SELECT user_phone, bot_phone_id "
             "FROM users WHERE chat_stage = 5 AND analysis_send_at <= ?", (now,))
         due = cursor.fetchall()
 
-        for phone, bot_id, a1, a2, a3 in due:
-            log.info("Generating 30-min AI analysis for %s (model=%s)", phone, GROQ_MODEL)
-
-            prompt = f"""Act as an expert women's health and weight loss coach for 'livelyher'.
-The client provided these answers regarding their health, diet, and stress:
-Physical: {a1}
-Dietary: {a2}
-Mental/Stress: {a3}
-
-Write a highly empathetic, detailed analysis strictly in Roman Urdu explaining why they are struggling to lose weight based on their answers, and pitch the livelyher Personalized Plan to fix it."""
-
-            response = groq().chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            final_pitch = response.choices[0].message.content
-
-            meta.send_whatsapp_text(bot_id or PHONE_NUMBER_ID, phone, final_pitch)
-            log.info("[WA] -> %s: 30-min analysis sent (%.80s...)", phone, final_pitch)
+        for phone, bot_id in due:
+            log.info("30 minutes passed. Starting pitch phase for %s", phone)
+            meta.send_whatsapp_text(bot_id or PHONE_NUMBER_ID, phone, PITCH_1)
             cursor.execute("UPDATE users SET chat_stage = 6 WHERE user_phone = ?", (phone,))
             conn.commit()  # commit per user so one failure can't stall the rest
     except Exception:
@@ -184,9 +183,7 @@ def verify_webhook(request: Request) -> Response:
 @app.post("/webhook", response_model=None)
 async def receive_webhook(request: Request):
     body = await request.body()
-    log.info("POST /webhook (%d bytes) from %s",
-             len(body), request.client.host if request.client else "?")
-
+    
     if not meta.verify_signature(body, request.headers.get("X-Hub-Signature-256")):
         log.warning("Rejected POST with invalid signature")
         return Response(status_code=403)
@@ -194,7 +191,6 @@ async def receive_webhook(request: Request):
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
-        log.warning("POST with invalid JSON: %.200s", body)
         return {"status": "ignored (bad json)"}
 
     if data.get("object") != "whatsapp_business_account":
@@ -207,7 +203,6 @@ async def receive_webhook(request: Request):
 
             for msg in val.get("messages", []):
                 if msg.get("type") != "text":
-                    log.info("Ignoring non-text message type=%s", msg.get("type"))
                     continue
 
                 sender_phone = msg.get("from")
@@ -215,11 +210,10 @@ async def receive_webhook(request: Request):
                 message_text = (msg.get("text") or {}).get("body", "").strip()
                 log.info("[WA] %s: %s", sender_phone, message_text)
 
-                task = asyncio.create_task(asyncio.to_thread(
-                    _dispatch_safe, sender_phone, bot_phone_id, message_id, message_text))
+                # Use fully async dispatch so we can use await asyncio.sleep()
+                task = asyncio.create_task(_dispatch_safe(sender_phone, bot_phone_id, message_id, message_text))
                 task.add_done_callback(_log_task_result)
 
-    # Always 200 fast — Meta retries deliveries on timeouts.
     return {"status": "ok"}
 
 
@@ -230,7 +224,7 @@ def _log_task_result(task: asyncio.Task) -> None:
         log.error("Background dispatch crashed: %r", exc, exc_info=exc)
 
 
-# ------------------------------------------------------------------ logic
+# ------------------------------------------------------------------ AI Generators
 def validate_answer(current_questions: str, user_message: str) -> dict:
     prompt = f"""You are Ani from 'livelyher', a women's health and weight-loss coaching service.
 The user was asked these questions: "{current_questions}"
@@ -254,10 +248,56 @@ Return ONLY pure JSON in this format:
     )
     return json.loads(response.choices[0].message.content)
 
+def evaluate_intent(user_msg: str) -> dict:
+    """Checks if the user is answering 'yes/ok' to proceed, or asking an out-of-context question."""
+    prompt = f"""You are Ani from Livelyher. The user is in a consultation funnel.
+User just said: "{user_msg}"
+
+Task:
+1. Are they generally agreeing to proceed, answering "yes/ok", or saying "I am here"? (Return is_valid: true)
+2. If they are asking an out-of-context question or complaining, return is_valid: false, and write a polite, short Roman Urdu reply addressing their concern. 
+NEVER USE MARKDOWN (no *, #, -, etc). Plain text only.
+
+Format: {{"is_valid": true/false, "reply": "string or null"}}"""
+    
+    response = groq().chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
+    )
+    return json.loads(response.choices[0].message.content)
+
+def generate_medical_pitch(a1, a2, a3) -> str:
+    prompt = f"""You are a health coach. The user's data:
+Physical: {a1} | Diet: {a2} | Stress: {a3}
+
+Write exactly ONE paragraph in Roman Urdu using this exact structure (fill in the brackets with scientific but simple explanations based on their data):
+"aapki situation jo apnei bataye [mention specific situation causing effect], they sugges you have [their medical conditions like insulin sensitivity, PCOS, or obesity] ismei [simply scientifically explain what happens in it relating to them] jiskk waja sei [their pain or problem they told they are suffering]"
+
+CONSTRAINTS FOR ROMAN URDU:
+- Write strictly in natural, everyday Pakistani Roman Urdu.
+- DO NOT use Hindi words.
+- DO NOT add extra greetings or endings.
+- STRICTLY NO MARKDOWN (no asterisks, no hashes, no bullet points). Plain text only."""
+    response = groq().chat.completions.create(model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}])
+    return response.choices[0].message.content.strip().replace("*", "").replace("#", "")
+
+def generate_fear_pitch(a1, a2, a3) -> str:
+    prompt = f"""You are a health coach. User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
+
+Write exactly ONE paragraph in Roman Urdu using this exact structure to install a slight fear element:
+"In coming months or a year it can lead to [tell what happens if we leave it untreated like 90+ weight, diabetes, losing body shape, PCOS, etc based on their specific problem] but don't worry insha'Allah we will completely fix it in few weeks!"
+
+CONSTRAINTS FOR ROMAN URDU:
+- Do not make the fear paralyzing, just realistic.
+- Write strictly in natural, everyday Pakistani Roman Urdu.
+- DO NOT add extra greetings or endings.
+- STRICTLY NO MARKDOWN (no asterisks, no hashes, no bullet points). Plain text only."""
+    response = groq().chat.completions.create(model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}])
+    return response.choices[0].message.content.strip().replace("*", "").replace("#", "")
+
 
 def _validate_or_accept(questions: str, message_text: str) -> dict:
-    """If the validator itself errors (API hiccup, bad JSON), accept the
-    answer instead of silently freezing a lead mid-funnel."""
     try:
         return validate_answer(questions, message_text)
     except Exception:
@@ -265,89 +305,149 @@ def _validate_or_accept(questions: str, message_text: str) -> dict:
         return {"is_valid": True}
 
 
-def _dispatch_safe(sender_phone: str, bot_phone_id: str,
-                   message_id: str, message_text: str) -> None:
+# ------------------------------------------------------------------ Core Logic Flow
+async def _dispatch_safe(sender_phone: str, bot_phone_id: str,
+                         message_id: str, message_text: str) -> None:
     try:
-        _dispatch(sender_phone, bot_phone_id, message_id, message_text)
+        await _dispatch(sender_phone, bot_phone_id, message_id, message_text)
     except Exception:
         log.exception("Dispatch failed for %s", sender_phone)
 
 
-def _dispatch(sender_phone: str, bot_phone_id: str,
-              message_id: str, message_text: str) -> None:
-    conn = _db()
-    cursor = conn.cursor()
+async def _dispatch(sender_phone: str, bot_phone_id: str,
+                    message_id: str, message_text: str) -> None:
+    
+    # 1. Check duplicate messages without locking the DB during async sleeps
+    with _db() as conn:
+        if message_id:
+            try:
+                conn.execute("INSERT INTO seen_messages(message_id) VALUES (?)", (message_id,))
+            except sqlite3.IntegrityError:
+                log.info("Duplicate delivery of %s — skipping", message_id)
+                return
 
-    # Dedupe Meta webhook retries so a user never double-advances
-    if message_id:
-        cursor.execute("INSERT OR IGNORE INTO seen_messages(message_id) VALUES (?)",
-                       (message_id,))
-        if cursor.rowcount == 0:
-            log.info("Duplicate delivery of %s — skipping", message_id)
-            conn.commit()
-            conn.close()
-            return
-
-    def send(text: str) -> None:
-        meta.send_whatsapp_text(bot_phone_id, sender_phone, text)
-        log.info("[WA] -> %s: %.80s", sender_phone, text)
-
-    try:
-        cursor.execute("SELECT chat_stage FROM users WHERE user_phone = ?", (sender_phone,))
+        cursor = conn.execute("SELECT chat_stage, answers_1, answers_2, answers_3 FROM users WHERE user_phone = ?", (sender_phone,))
         row = cursor.fetchone()
 
-        if not row:
-            cursor.execute(
-                "INSERT INTO users (user_phone, bot_phone_id, chat_stage) VALUES (?, ?, 1)",
-                (sender_phone, bot_phone_id))
-            conn.commit()
-            send(MSG_1)
+    # Helper function to send messages asynchronously 
+    async def send(text: str):
+        await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
+        log.info("[WA] -> %s: %.80s", sender_phone, text)
+
+    # STATE 0: NEW USER (30 SECOND DELAY)
+    if not row:
+        with _db() as conn:
+            conn.execute("INSERT INTO users (user_phone, bot_phone_id, chat_stage) VALUES (?, ?, 1)", (sender_phone, bot_phone_id))
+        
+        log.info("--> [NEW USER] Delaying 30s before first response to %s", sender_phone)
+        await asyncio.sleep(30)
+        await send(MSG_1)
+        return
+
+    stage, a1, a2, a3 = row
+
+    with _db() as conn:
+        conn.execute("UPDATE users SET bot_phone_id = ? WHERE user_phone = ?", (bot_phone_id, sender_phone))
+
+    # Smart Intent Checker for pitch stages (prevents bot from advancing if user asks a question)
+    if stage >= 6:
+        intent = await asyncio.to_thread(evaluate_intent, message_text)
+        if not intent.get("is_valid"):
+            log.info("--> [OUT OF BAND] Answering user's question instead of advancing state.")
+            await send(intent.get("reply") or "Please confirm you are ready to proceed.")
             return
 
-        stage = row[0]
-        cursor.execute("UPDATE users SET bot_phone_id = ? WHERE user_phone = ?",
-                       (bot_phone_id, sender_phone))
+    # STATE MACHINE ADVANCEMENT
+    if stage == 1:
+        await send(MSG_2)
+        await asyncio.sleep(5)
+        await send(SET_1)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 2 WHERE user_phone = ?", (sender_phone,))
 
-        if stage == 1:
-            send(MSG_2)
-            send(SET_1)
-            cursor.execute("UPDATE users SET chat_stage = 2 WHERE user_phone = ?",
-                           (sender_phone,))
+    elif stage == 2:
+        val = await asyncio.to_thread(_validate_or_accept, SET_1, message_text)
+        if val.get("is_valid"):
+            with _db() as conn:
+                conn.execute("UPDATE users SET chat_stage = 3, answers_1 = ? WHERE user_phone = ?", (message_text, sender_phone))
+            await send(SET_2)
+        else:
+            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
 
-        elif stage == 2:
-            val = _validate_or_accept(SET_1, message_text)
-            if val.get("is_valid"):
-                cursor.execute("UPDATE users SET chat_stage = 3, answers_1 = ? "
-                               "WHERE user_phone = ?", (message_text, sender_phone))
-                send(SET_2)
-            else:
-                send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+    elif stage == 3:
+        val = await asyncio.to_thread(_validate_or_accept, SET_2, message_text)
+        if val.get("is_valid"):
+            with _db() as conn:
+                conn.execute("UPDATE users SET chat_stage = 4, answers_2 = ? WHERE user_phone = ?", (message_text, sender_phone))
+            await send(SET_3)
+        else:
+            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
 
-        elif stage == 3:
-            val = _validate_or_accept(SET_2, message_text)
-            if val.get("is_valid"):
-                cursor.execute("UPDATE users SET chat_stage = 4, answers_2 = ? "
-                               "WHERE user_phone = ?", (message_text, sender_phone))
-                send(SET_3)
-            else:
-                send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+    elif stage == 4:
+        val = await asyncio.to_thread(_validate_or_accept, SET_3, message_text)
+        if val.get("is_valid"):
+            send_time = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=ANALYSIS_DELAY_MINUTES)).isoformat()
+            with _db() as conn:
+                conn.execute("UPDATE users SET chat_stage = 5, answers_3 = ?, analysis_send_at = ? WHERE user_phone = ?", (message_text, send_time, sender_phone))
+            await send(MSG_END)
+        else:
+            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
 
-        elif stage == 4:
-            val = _validate_or_accept(SET_3, message_text)
-            if val.get("is_valid"):
-                send_time = (datetime.datetime.now(datetime.timezone.utc)
-                             + datetime.timedelta(minutes=ANALYSIS_DELAY_MINUTES)).isoformat()
-                cursor.execute("UPDATE users SET chat_stage = 5, answers_3 = ?, "
-                               "analysis_send_at = ? WHERE user_phone = ?",
-                               (message_text, send_time, sender_phone))
-                send(MSG_END)
-            else:
-                send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+    elif stage == 5:
+        await send(MSG_WAIT)
 
-        elif stage >= 5:
-            # While waiting for analysis, or after the pitch was delivered.
-            send(MSG_WAIT if stage == 5 else MSG_DONE)
+    elif stage == 6:
+        # User replied to PITCH_1 ("I am here")
+        msg2 = await asyncio.to_thread(generate_medical_pitch, a1, a2, a3)
+        await send(msg2)
+        await asyncio.sleep(8)
+        await send(PITCH_3)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 7 WHERE user_phone = ?", (sender_phone,))
 
-        conn.commit()
-    finally:
-        conn.close()
+    elif stage == 7:
+        # User replied to PITCH_3 ("Getting my point?")
+        msg4 = await asyncio.to_thread(generate_fear_pitch, a1, a2, a3)
+        await send(msg4)
+        await asyncio.sleep(7)
+        await send(PITCH_5)
+        await asyncio.sleep(5)
+        await send(PITCH_6)
+        await asyncio.sleep(5)
+        await send(PITCH_7)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 8 WHERE user_phone = ?", (sender_phone,))
+
+    elif stage == 8:
+        # User replied to PITCH_7 ("Exercise suggest karain")
+        await send(PITCH_8)
+        await asyncio.sleep(3)
+        await send(PITCH_9)
+        await asyncio.sleep(4)
+        await send(PITCH_10)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 9 WHERE user_phone = ?", (sender_phone,))
+
+    elif stage == 9:
+        # User replied to PITCH_10 ("Seen the video")
+        await send(PITCH_11)
+        await asyncio.sleep(4)
+        await send(PITCH_12)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 10 WHERE user_phone = ?", (sender_phone,))
+
+    elif stage == 10:
+        # User replied to PITCH_12 ("Meal changes")
+        await send(PITCH_13)
+        await asyncio.sleep(4)
+        await send(PITCH_14)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 11 WHERE user_phone = ?", (sender_phone,))
+
+    elif stage == 11:
+        # User replied to PITCH_14 ("Send questions")
+        await send(PITCH_15)
+        await asyncio.sleep(4)
+        await send(PITCH_16)
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = 12 WHERE user_phone = ?", (sender_phone,))
