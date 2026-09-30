@@ -258,7 +258,8 @@ Task:
 2. If they are asking an out-of-context question or complaining, return is_valid: false, and write a polite, short Roman Urdu reply addressing their concern. 
 NEVER USE MARKDOWN (no *, #, -, etc). Plain text only.
 
-Format: {{"is_valid": true/false, "reply": "string or null"}}"""
+Return ONLY pure JSON in this format: 
+{{"is_valid": true/false, "reply": "string or null"}}"""
     
     response = groq().chat.completions.create(
         model=GROQ_MODEL,
