@@ -54,6 +54,16 @@ def groq() -> Groq:
         _groq_client = Groq(api_key=key)
     return _groq_client
 
+# ------------------------------------------------------------ livelyher knowledge base
+FAQ_KNOWLEDGE_BASE = """
+1. Intake Process: No paying first. We collect details, conduct analysis, and present it. They only buy if satisfied.
+2. Pricing: One-time purchase, no monthly fees. Digital = Upfront via JazzCash/EasyPaisa/Bank. Printed = Cash on Delivery (COD).
+3. Delivery: Digital = 24 hours. Printed = 5-7 working days. Manuals are clean, easy-to-read, visual without clutter.
+4. Customization: 100% customized for PCOS/Vegan, etc. Built around accessible home-cooked foods (daal, tawa chicken). No expensive groceries.
+5. Results: No specific kg guaranteed. If no results, we adjust the plan for FREE. Recommend 15-min daily walk, no heavy gym needed.
+6. Support: Includes 4 weeks WhatsApp support. Free extension if they leave a review.
+7. Company: Based in Gujrat, 100% virtual team of dietitians and psychologists. No in-person clinic visits required.
+"""
 
 # ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
@@ -189,19 +199,24 @@ def _log_task_result(task: asyncio.Task) -> None:
 
 # ------------------------------------------------------------------ AI Generators
 def validate_answer(current_questions: str, user_message: str) -> dict:
-    prompt = f"""You are Ani from 'livelyher', a women's health and weight-loss coaching service.
+    prompt = f"""You are Ani from 'livelyher', a brilliant sales specialist and expert dietitian. You control the frame of the conversation like a top-tier closer.
+When a prospect asks a question instead of answering your form, you answer it smartly and concisely using our FAQ, then seamlessly bridge the conversation back to the script.
+
+FAQ KNOWLEDGE BASE:
+{FAQ_KNOWLEDGE_BASE}
+
 The user was asked these questions: "{current_questions}"
 Their reply was: "{user_message}"
 
 Task:
 1. Did the user actually attempt to answer the questions? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question).
-2. If NO: Are they asking a valid question about livelyher? If so, answer it briefly in Roman Urdu, then politely ask them to answer the original questions.
+2. If NO: Are they asking a question? If so, answer it CONCISELY in Roman Urdu based strictly on the FAQ, then confidently bridge them back by politely asking them to answer the original questions to continue.
 3. If NO and totally off-topic: Politely say you can only assist with livelyher inquiries, and repeat the questions.
 
 Return ONLY pure JSON in this format:
 {{
   "is_valid": true or false,
-  "reply_if_invalid": "Your response here if false, else null"
+  "reply_if_invalid": "Your smart, concise Roman Urdu response here if false, else null"
 }}"""
 
     response = groq().chat.completions.create(
@@ -212,12 +227,18 @@ Return ONLY pure JSON in this format:
     return json.loads(response.choices[0].message.content)
 
 def evaluate_intent(user_msg: str) -> dict:
-    prompt = f"""You are Ani from Livelyher. The user is in a consultation funnel.
+    prompt = f"""You are Ani from Livelyher, a brilliant sales specialist and expert dietitian. You control the conversation.
+When a prospect asks a question, you answer it smartly and concisely using our FAQ, then seamlessly bridge the conversation back to the script to move them toward the sale.
+
+FAQ KNOWLEDGE BASE:
+{FAQ_KNOWLEDGE_BASE}
+
+The user is currently in the middle of a consultation/sales funnel.
 User just said: "{user_msg}"
 
 Task:
 1. Are they generally agreeing to proceed, answering "yes/ok", or saying "I am here"? (Return is_valid: true)
-2. If they are asking an out-of-context question or complaining, return is_valid: false, and write a polite, short Roman Urdu reply addressing their concern. 
+2. If they are asking a question or complaining, return is_valid: false. Write a polite, concise Roman Urdu reply addressing their concern using the FAQ, then smartly bridge the conversation back by asking them to confirm they are ready to proceed or answer your previous prompt.
 NEVER USE MARKDOWN (no *, #, -, etc). Plain text only.
 
 Return ONLY pure JSON in this format: 
