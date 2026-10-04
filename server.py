@@ -2,12 +2,14 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v3) is unchanged: analysis is still pre-generated and reused,
-hesitation/payment fixes, debounce batching, sanitizer, chat history, sweeps.
+Everything else (v4) is unchanged: barge-in burst abort, reply-lag-aware
+intent checker, pause handling, non-text/screenshot acknowledgments,
+hesitation/payment fixes, pre-generated analysis reuse, debounce batching,
+sanitizer, chat history, wake-up sweeps.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
-Switch back to the real timer by running server.py instead.
+Switch back to the real 30-minute timer by running server.py instead.
 """
 
 from __future__ import annotations
@@ -93,6 +95,10 @@ HESITATION_FALLBACK = ("No problem Ma'am 😊 take your time, I am right here wh
 MSG_CONFIRM_PAYMENT = ("Perfect Ma'am! 🎉 Once you have made the payment, just share "
                        "the screenshot here and we will confirm your spot right away, "
                        "Insha'Allah.")
+MSG_SCREENSHOT = ("JazakAllah Ma'am! 🌸 We have received your screenshot. Our team is "
+                  "verifying the payment and will Insha'Allah confirm your spot shortly.")
+MSG_TYPE_ONLY = ("Sorry Ma'am, I can understand text messages only. Kindly type your "
+                 "reply here and I will help you right away 😊")
 
 # ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
 PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
@@ -278,6 +284,11 @@ def verify_webhook(request: Request) -> Response:
 # ------------------------------------------------- 15-20s debounce machinery
 _buffers: dict[str, list[str]] = {}
 _workers: dict[str, asyncio.Task] = {}
+_interrupted: set[str] = set()  # leads who spoke while we were mid-reply
+
+
+class _BurstAborted(Exception):
+    """The lead sent a new message while a multi-message burst was in flight."""
 
 
 def _seen_or_mark(message_id: str) -> bool:
@@ -294,6 +305,8 @@ def _enqueue(sender_phone: str, bot_phone_id: str, message_id: str, message_text
         log.info("Duplicate delivery of %s — skipping", message_id)
         return
     _buffers.setdefault(sender_phone, []).append(message_text)
+    if message_text.strip():
+        _interrupted.add(sender_phone)  # fresh input: abort any in-flight burst ASAP
     worker = _workers.get(sender_phone)
     if worker is None or worker.done():
         task = asyncio.create_task(_conversation_worker(sender_phone, bot_phone_id))
@@ -352,7 +365,15 @@ async def receive_webhook(request: Request):
 
             for msg in val.get("messages", []):
                 if msg.get("type") != "text":
-                    log.info("Ignoring non-text message type=%s", msg.get("type"))
+                    # Never leave a voice note / image / document on "seen":
+                    # acknowledge it instead of going silent.
+                    if _seen_or_mark(msg.get("id", "")):
+                        continue
+                    log.info("Non-text message type=%s from %s — ack queued",
+                             msg.get("type"), msg.get("from"))
+                    task = asyncio.create_task(_ack_nontext(
+                        msg.get("from"), bot_phone_id, msg.get("type")))
+                    task.add_done_callback(_log_task_result)
                     continue
 
                 sender_phone = msg.get("from")
@@ -372,6 +393,24 @@ def _log_task_result(task: asyncio.Task) -> None:
         log.error("Background task crashed: %r", exc, exc_info=exc)
 
 
+async def _ack_nontext(sender_phone: str, bot_phone_id: str, mtype: str) -> None:
+    """Acknowledge an image / voice note / document so the lead never gets
+    silence. Screenshots at the payment stage get a real receipt message;
+    everything else is gently steered back to text."""
+    try:
+        with _db() as conn:
+            row = conn.execute("SELECT chat_stage FROM users WHERE user_phone = ?",
+                               (sender_phone,)).fetchone()
+        stage = row[0] if row else 0
+        await asyncio.sleep(6)
+        text = MSG_SCREENSHOT if (mtype == "image" and stage >= 10) else MSG_TYPE_ONLY
+        await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
+        add_history(sender_phone, "bot", text)
+        log.info("[WA] -> %s: (non-text ack) %.60s", sender_phone, text)
+    except Exception:
+        log.exception("Non-text ack failed for %s", sender_phone)
+
+
 # ------------------------------------------------------------------ AI Generators
 _FEMALE = ("You are Ani, a FEMALE health coach from 'livelyher'. Always speak as a "
            "woman: use feminine wording only, never masculine forms.")
@@ -388,9 +427,10 @@ Recent conversation:
 Their latest reply was: "{user_message}"
 
 Task:
-1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question).
-2. If NO: Are they asking a valid question about livelyher? If so, answer it briefly, then politely ask them to answer the original questions.
-3. If NO and totally off-topic: Politely say you can only assist with livelyher inquiries, and repeat the questions.
+1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
+2. If NO and the message is a PAUSE or DELAY message ("wait", "one minute", "brb", "I will be back", "busy right now", "ruko", "baad mein batati hoon"): is_valid = false, and reply_if_invalid is ONLY a short warm acknowledgment such as "Sure Ma'am, take your time. I am right here whenever you are ready." Do NOT repeat the questions, do NOT scold, and do NOT say you can only help with inquiries.
+3. If NO and they are asking a valid question about livelyher: answer it briefly, then politely ask them to answer the original questions.
+4. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -421,9 +461,13 @@ The user is in a consultation funnel. Here is the recent conversation for contex
 
 User just said: "{user_msg}"
 
-Classify the user's LATEST message:
-1. is_valid TRUE only for CLEAR AGREEMENT, CONFIRMATION, presence ("I am here"), or a direct yes to the question the bot last asked (e.g. "yes", "ok", "sure", "send it", "I am ready").
-2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later"), OBJECTIONS (price, trust, doubts), QUESTIONS about livelyher or anything else, or COMPLAINTS. In this case write a polite, short, empathetic reply that acknowledges their concern without pressure, and (if the funnel was waiting on a confirmation) softly invites them to continue whenever ready.
+Classify the user's LATEST message, following these rules strictly:
+
+RULE A - REPLY LAG: People read and reply late. Her message may be answering an EARLIER bot message, not the most recent one. Look at the conversation history and decide WHICH bot message she is actually responding to. If she is clearly reacting to something older (for example talking about the video, the analysis, or an earlier question) while a NEWER question is still open and she did not answer that newer question, that is NOT fresh agreement: is_valid = false.
+RULE B - MIXED SIGNALS: If a quick "ok / yes / theek hai" is bundled with ANY hesitation, delay, condition, inability, or question ("ok but...", "ok I will watch the video later and then decide", "wait one minute", "I can't right now"), HESITATION WINS: is_valid = false.
+
+1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
+2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. In this case write a polite, short, empathetic reply that matches exactly what she said (for example, if she cannot watch the video now, invite her to watch it whenever suits her and you will continue then), with zero pressure, and softly invite her to continue whenever she is ready.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -523,11 +567,16 @@ def _validate_or_accept(questions: str, message_text: str, user_phone: str) -> d
 async def _dispatch_safe(sender_phone: str, bot_phone_id: str, message_text: str) -> None:
     try:
         await _dispatch(sender_phone, bot_phone_id, message_text)
+    except _BurstAborted:
+        log.info("--> [BARGE-IN] %s spoke mid-burst: remaining messages skipped, "
+                 "stage NOT advanced — her message gets evaluated at the right step",
+                 sender_phone)
     except Exception:
         log.exception("Dispatch failed for %s", sender_phone)
 
 
 async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> None:
+    _interrupted.discard(sender_phone)
     with _db() as conn:
         cursor = conn.execute(
             "SELECT chat_stage, answers_1, answers_2, answers_3, analysis_text "
@@ -538,6 +587,18 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
         add_history(sender_phone, "bot", text)
         log.info("[WA] -> %s: %.80s", sender_phone, text)
+
+    async def csend(text: str):
+        """Burst-aware send: stops the rest of the burst the moment she speaks.
+
+        Used for every pitch-stage message so her reply can never arrive 'too
+        late' after we already advanced past her. The aborted burst simply
+        stops; her buffered message is then evaluated at the CURRENT stage
+        (the context she was actually answering in).
+        """
+        if sender_phone in _interrupted:
+            raise _BurstAborted
+        await send(text)
 
     # STATE 0: NEW USER (30 SECOND DELAY)
     if not row:
@@ -563,7 +624,7 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         if not intent.get("is_valid"):
             log.info("--> [HOLD] Objection/question/hesitation — stage %s frozen.", stage)
             await asyncio.sleep(10)
-            await send(intent.get("reply") or HESITATION_FALLBACK)
+            await csend(intent.get("reply") or HESITATION_FALLBACK)
             return
 
     # STATE MACHINE ADVANCEMENT (WITH 10-15s DELAYS)
@@ -636,9 +697,9 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
                 conn.execute("UPDATE users SET analysis_text = ? WHERE user_phone = ?",
                              (msg2, sender_phone))
         await asyncio.sleep(10)
-        await send(msg2)
+        await csend(msg2)
         await asyncio.sleep(12)
-        await send(PITCH_3)
+        await csend(PITCH_3)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 7 WHERE user_phone = ?", (sender_phone,))
 
@@ -646,39 +707,39 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         msg4 = await asyncio.to_thread(generate_fear_pitch, a1, a2, a3)
         clause6 = await asyncio.to_thread(generate_plan_explain, a1, a2, a3)
         await asyncio.sleep(10)
-        await send(msg4)
+        await csend(msg4)
         await asyncio.sleep(10)
-        await send(PITCH_5)
+        await csend(PITCH_5)
         await asyncio.sleep(10)
-        await send(PITCH_6_TEMPLATE.replace("{AI_EXPLAIN}", clause6))
+        await csend(PITCH_6_TEMPLATE.replace("{AI_EXPLAIN}", clause6))
         await asyncio.sleep(10)
-        await send(PITCH_7)
+        await csend(PITCH_7)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 8 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 8:
         await asyncio.sleep(10)
-        await send(PITCH_8)
+        await csend(PITCH_8)
         await asyncio.sleep(10)
-        await send(PITCH_9)
+        await csend(PITCH_9)
         await asyncio.sleep(10)
-        await send(PITCH_10)
+        await csend(PITCH_10)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 9 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 9:
         await asyncio.sleep(10)
-        await send(PITCH_11)
+        await csend(PITCH_11)
         await asyncio.sleep(10)
-        await send(PITCH_13)
+        await csend(PITCH_13)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 10 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 10:
         await asyncio.sleep(10)
-        await send(PITCH_15)
+        await csend(PITCH_15)
         await asyncio.sleep(10)
-        await send(PITCH_16)
+        await csend(PITCH_16)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 11 WHERE user_phone = ?", (sender_phone,))
 
@@ -686,4 +747,4 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         # Payment stage: never go silent again. They agreed/confirmed —
         # ask for the payment screenshot to close the loop.
         await asyncio.sleep(10)
-        await send(MSG_CONFIRM_PAYMENT)
+        await csend(MSG_CONFIRM_PAYMENT)
