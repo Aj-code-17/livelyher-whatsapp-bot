@@ -14,7 +14,7 @@ import requests
 
 log = logging.getLogger("messenger")
 
-GRAPH = "https://graph.facebook.com/v21.0"
+GRAPH = "https://graph.facebook.com/v22.0"
 
 
 class MetaClient:
@@ -53,6 +53,26 @@ class MetaClient:
                 headers={"Authorization": f"Bearer {self.token}"},
                 json={"messaging_product": "whatsapp",
                       "status": "read", "message_id": message_id},
+                timeout=10,
+            )
+        except requests.RequestException:
+            pass
+
+    def send_typing_indicator(self, phone_number_id: str, message_id: str) -> None:
+        """Shows 'typing...' under our name while her reply is being composed
+        (also blue-ticks her message). Requires Graph API v22.0+. Display is
+        handled by WhatsApp: it clears on our next reply or after ~25s.
+        Cosmetic only — failures must never disturb the funnel."""
+        if not message_id:
+            return
+        try:
+            requests.post(
+                f"{GRAPH}/{phone_number_id}/messages",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"messaging_product": "whatsapp",
+                      "status": "read",
+                      "message_id": message_id,
+                      "typing_indicator": {"type": "text"}},
                 timeout=10,
             )
         except requests.RequestException:
