@@ -56,6 +56,21 @@ DEBOUNCE_MIN = float(os.getenv("DEBOUNCE_MIN_SECONDS", "15"))
 DEBOUNCE_MAX = float(os.getenv("DEBOUNCE_MAX_SECONDS", "20"))
 
 _groq_client = None
+import urllib.request
+
+# Add this to your Render Environment Variables (e.g., https://livelyher.onrender.com)
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")
+
+def keep_alive_ping():
+    """Pings its own public URL every 14 minutes to prevent Render from sleeping."""
+    if not PUBLIC_URL:
+        return
+    try:
+        ping_url = PUBLIC_URL.rstrip("/") + "/ping"
+        urllib.request.urlopen(ping_url, timeout=10)
+        log.info("Self-ping successful! 🟢 Bot is awake.")
+    except Exception as e:
+        log.warning("Self-ping failed: %s", e)
 
 
 def groq() -> Groq:
@@ -272,10 +287,11 @@ def _start_background() -> None:
     if _scheduler is None:
         _scheduler = BackgroundScheduler()
         _scheduler.add_job(check_scheduled_analyses, "interval", seconds=60)
+        _scheduler.add_job(keep_alive_ping, "interval", minutes=14)  # <--- ADDED THIS LINE
         _scheduler.start()
         # WAKE-UP SWEEP: on every boot, immediately check for overdue analyses
-        # (covers server sleep, restarts, deploys, crashes).
         _scheduler.add_job(check_scheduled_analyses)
+    
     with _db() as conn:
         leads = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         rows = conn.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0]
