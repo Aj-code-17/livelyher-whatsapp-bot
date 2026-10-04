@@ -2,10 +2,11 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v7) is unchanged: opt-out/refusal parking + resume, typing
-indicator, resume-not-repeat bursts, barge-in abort, reply-lag intent, pause
-handling, pacing tiers (4s/7s/12s), no-cliche short answers, you/your
-addressing, non-text acks, state resume from disk.
+Everything else (v8) is unchanged: FAQ-grounded opening analysis at the
+greeting/intake stages, opt-out parking + resume, typing indicator,
+resume-not-repeat bursts, barge-in abort, reply-lag intent, pause handling,
+pacing tiers (4s/7s/12s), no-cliche short answers, you/your addressing,
+non-text acks, state resume from disk.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -78,51 +79,9 @@ def _clean(text: str) -> str:
     return t.strip()
 
 
-# ------------------------------------------------------------ livelyher knowledge base
-FAQ_KNOWLEDGE_BASE = """
-1. The Intake Process & Getting Started
-Q: How does the process work? Do I pay first?
-A: No, you don't have to pay first. We start by collecting your details and conducting a personalized analysis. Once we present the analysis and you feel completely satisfied with our approach, you can then choose to purchase your customized plan.
-Q: What information do you need from me to create the plan?
-A: During the initial consultation, we collect essential details such as your current weight, height, age, medical history, and daily routine. Depending on your specific health condition or goals, we may ask a few additional questions to ensure the plan is perfectly tailored to you.
-2. Pricing & Payment Methods
-Q: Is this a monthly subscription?
-A: No. The LivelyHer diet plan is a one-time purchase. There are no hidden fees or recurring monthly charges.
-Q: How can I pay for my plan?
-A: Payment depends on the delivery method you choose:
-Digital Plans: Payment is made upfront via JazzCash, EasyPaisa, or direct Bank Transfer.
-Printed Plans: We offer Cash on Delivery (COD) for physical printed manuals.
-3. Delivery Times & Formats
-Q: How long does it take to get my plan?
-A: We offer two delivery options:
-Digital Plan: Delivered to you within 24 hours of purchase.
-Printed Plan: Delivered to your physical address within 5 to 7 working days.
-Q: What will the plan look like?
-A: You will receive a clean, easy-to-read visual manual. It is designed with clear text and sleek outline icons to guide you step-by-step, without any visual clutter or character illustrations.
-4. Customization & Food Types
-Q: Do you cater to medical conditions like PCOS or specific diets like vegetarian/vegan?
-A: Yes, absolutely. Every plan is customized to your exact condition and dietary preferences based on the detailed information you provide during intake.
-Q: Will I need to buy expensive groceries or supplements?
-A: Not at all. Your meals are built around accessible, everyday home-cooked foods like daal, tawa-cooked chicken, and shami kebabs. We focus on portion control and balanced nutrition using what you already have at home.
-5. Results & Guarantees
-Q: How much weight am I guaranteed to lose in 4 weeks?
-A: We do not guarantee a specific number on the scale because everybody reacts differently. However, we never leave you in the dark. If you follow the plan and do not see results, we will create a brand new, adjusted plan for you entirely for free.
-Q: Do I have to work out to see results?
-A: The primary focus is on nutrition, but we highly recommend adding a simple 15-minute daily walk to your routine to accelerate progress and support overall wellness. Heavy gym sessions are not required.
-6. Support & Extensions
-Q: What kind of support do I get after buying the plan?
-A: Your purchase includes 4 weeks of dedicated WhatsApp support starting the day you receive your manual. You can message us anytime if you need help with meal swaps, motivation, or guidance.
-Q: What happens when my 4 weeks of WhatsApp support ends?
-A: You can extend your WhatsApp support completely for free! All you have to do is share a review of your LivelyHer experience with us, and we will extend your support period.
-7. Company, Team & Location
-Q: Where is LivelyHer located? A: Our main operations are based in Gujrat, but we function primarily as a virtual team, allowing us to seamlessly serve clients online without geographic limitations.
-Q: Who creates the plans and provides the support? A: LivelyHer is backed by a dedicated professional network of multiple dieticians and psychologists. This multidisciplinary team ensures your plan is both nutritionally optimized and supportive of your mental well-being.
-Q: Do I need to visit a clinic or office in person? A: No in-person visits are required. Because we operate virtually, your entire journey—from the initial consultation to your 4 weeks of WhatsApp support—is handled completely online for maximum convenience.
-"""
-
 # ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
-MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah!"
+MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah! And Ma’am please reply in text not voice messages…"
 SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) kitna hai, aur aapki Height kya hai?\n2. Ye weight gain kab shuru hua, shaadi ke baad, pregnancy/delivery ke baad, ya pichle 1–2 saalon mein achanak barha?\n3. Body mein stubborn weight sabse zyada kahan mehsoos hota hai — lower belly/stomach fat, hips/thighs, ya overall heavy bloating?"
 SET_2 = "4. Pehle weight loss ke liye kya try kiya hai, crash diet, green teas, meal skipping, ya intermittent fasting and usei faida kyun hua?\n5. Aapki daily eating routine kaisi rehti hai, exactly what you usually eat in breakfast, lunch, dinner and snacking? iska answer thora detail mei dijye ga also tell the timing when you eat\n6. Kya koi hormonal blocker ya issue hai jiski wajah se weight drop nahi hota (jaise PCOS, Thyroid, ya irregular cycles)?"
 SET_3 = "For Understanding your Mood and Stress Level:\n1. 1 se 10 ke scale par aap apna daily anxiety aur mental stress kis number par rank karengi (jahan 1 ka matlab bilkul calm aur 10 ka matlab extreme overthinking ya bechaini ho)?\n2. Aapki sleep routine kaisi rehti hai, kya raat ko sote waqt mind switch off nahi hota ya neend toot-toot kar aati hai, aur subah uthne par energy bilkul low hoti hai?\n3. Aapko stress ya anxiety feel hoti hai? Ya aise lage kei jin cheezun ki pehlay enjoy krte that wo ab achi nai lagtin? Ya choti choti baat per gussa ya irritability hoti hoo?"
@@ -139,8 +98,7 @@ MSG_CONFIRM_PAYMENT = ("Perfect Ma'am! 🎉 Once you have made the payment, just
                        "Insha'Allah.")
 MSG_SCREENSHOT = ("JazakAllah Ma'am! 🌸 We have received your screenshot. Our team is "
                   "verifying the payment and will Insha'Allah confirm your spot shortly.")
-MSG_TYPE_ONLY = ("Sorry Ma'am, I can understand text messages only. Kindly type your "
-                 "reply here and I will help you right away 😊")
+MSG_TYPE_ONLY = "Ma’am I can’t listen to audio messages kindly reply in text messages"
 
 # Opt-out flow: she said no / stop / not interested — acknowledge ONCE, park
 # her, never re-ask. If she ever returns, resume from resume_stage.
@@ -149,22 +107,37 @@ MSG_GOODBYE = ("No problem at all Ma'am 🌸 Thank you for your time. If you eve
                "where you left off.")
 MSG_OPTOUT_FINAL = "Of course Ma'am, take care 🌸"
 MSG_WELCOME_BACK = "Welcome back Ma'am! 😊 Continuing right from where you left off."
+MSG_PAUSE = "Sure Ma'am, take your time. I am right here whenever you are ready."
 STAGE_OPTED_OUT = 50        # goodbye sent; one final soft line allowed
 STAGE_OPTED_OUT_HARD = 51   # final line sent; stay respectfully silent unless she re-engages
 
+# ---------------- FAQ KNOWLEDGE BASE (EDIT THIS WITH YOUR REAL INFO)
+# The AI answers her questions ONLY from these facts, so keep it accurate and
+# short. Used by: opening analysis (hi/hello stage), intake validator, and
+# the funnel intent checker.
+FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching program for women.
+- What it is: a personalized 6 week plan with simple diet changes, vitamins and a special tea, plus a mood and stress support plan.
+- Location: fully online. Consultation, free analysis and plans are delivered on WhatsApp, so clients can join from anywhere in Pakistan or abroad.
+- Price: original 3000 PKR, currently 51 percent off at 1470 PKR, which includes 4 weeks of coach support for any changes.
+- Printed plan price: 1950 PKR plus 200 delivery charges. Both digital and printed plans are the same in content, it's just the difference of digital and printed formats.
+- Payment policy: We prefer advance payment, but if the customer is having some problem making payment, they can pay after receiving the plan as well.
+- After the free analysis, the personalized plan is delivered within 24 hours once the final diet preference questions are answered.
+- Coaches stay available for adjustments during the whole journey.
+- If asked something not covered here (exact office address, medical guarantees, doctor details, physical product delivery), say politely that the team will confirm it after the free analysis. Do not invent facts."""
+
 # ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
-PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
+PITCH_1 = "Asslamualaikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
 PITCH_3 = "are you getting my point?"                                                                      # Message 3
-PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona bohat zaroori hota hai...."  # Message 5
-PITCH_6_TEMPLATE = "So, for that, I will make a few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also follow the mood plan because it will help you a lot with mood and energy"  # Message 6
-PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy to follow and also, we will always be available to you whenever you need any help.."  # Message 7
-PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version"  # Message 8
+PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety ko bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona wese hi bohat zaroori hai"  # Message 5
+PITCH_6_TEMPLATE = "For that, I will make just few changes in your diet and recommend few vitamins and a tea, {AI_EXPLAIN} and also, we will create a mood plan for you, Insha’Allah, it will help you a lot with mood and energy"  # Message 6
+PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy for you to follow and also, we will always be available to you whenever you need any help😇"  # Message 7
+PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version…"  # Message 8
 PITCH_9 = "https://your-video-link-here.com/video.mp4"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
 PITCH_10 = "let me know once you have seen it, I will share more details than .."                          # Message 11
-PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah ☺️"  # Message 12
-PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 15
-PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 16
-PITCH_16 = "For payment you can use following accounts:\n\nBank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher"  # Message 17  <--- ADD BANK DETAILS HERE
+PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah😊"  # Message 12
+PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye g….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13
+PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14
+PITCH_16 = "I will send you questions from the number 03700402752, it’s for our close customers and also for any questions, you have to contact on this number😊\n\nFor payment you can use following accounts:\n\nBank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher"  # Message 15 & Payment
 
 
 # ------------------------------------------------------------ database
@@ -518,16 +491,65 @@ _NO_CLICHES = ("NEVER use empathy cliches like 'I understand your concern', 'I h
                "direct, specific, and to the point.")
 
 
+def evaluate_opening(user_msg: str, user_phone: str) -> dict:
+    """Analyze the very first / opening messages so the bot actually LISTENS
+    before it talks: answers any question she asked (from the FAQ knowledge
+    base), spots refusal and pauses — instead of blindly dumping templates."""
+    history = _history_block(user_phone)
+    prompt = f"""{_FEMALE}
+TASK: OPENING MESSAGE ANALYSIS
+This is the very start of a WhatsApp conversation with a potential customer.
+Recent conversation (if any):
+{history}
+
+FAQ KNOWLEDGE BASE FOR ANSWERING QUESTIONS (answer ONLY from this, never invent facts):
+{FAQ_KNOWLEDGE_BASE}
+
+Her opening message: "{user_msg}"
+
+Decide:
+1. answer: If any part of her message is a QUESTION or a request for information (about livelyher, location, price, the plan, delivery, who we are), write a short, direct, smart 1 or 2 sentence answer based ONLY on the FAQ KNOWLEDGE BASE, speaking to her as "you". If she asked no question, answer is null.
+2. refusal: true only if she clearly declines or wants no contact ("no", "don't message me", "not interested", "stop"). Otherwise false.
+3. pause: true only if she asks you to wait or says she is busy ("wait", "one minute", "busy"). Otherwise false.
+
+CONSTRAINTS:
+- {_ENGLISH}
+- NEVER USE MARKDOWN and never use any hyphen or dash character. Plain text only.
+- {_NO_CLICHES}
+
+Return ONLY pure JSON in this format:
+{{"answer": "string or null", "refusal": true/false, "pause": true/false}}"""
+
+    response = groq().chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    result = json.loads(response.choices[0].message.content)
+    if result.get("answer"):
+        result["answer"] = _clean(result["answer"])
+    return result
+
+
+def _safe_opening(user_msg: str, user_phone: str) -> dict:
+    try:
+        return evaluate_opening(user_msg, user_phone)
+    except Exception:
+        log.exception("Opening analysis failed — continuing with plain greeting")
+        return {}
+
+
 def validate_answer(current_questions: str, user_message: str, user_phone: str) -> dict:
     history = _history_block(user_phone)
     prompt = f"""{_FEMALE}
 The user was asked these questions: "{current_questions}"
 Recent conversation:
 {history}
-Their latest reply was: "{user_message}"
 
 FAQ KNOWLEDGE BASE FOR ANSWERING QUESTIONS:
 {FAQ_KNOWLEDGE_BASE}
+
+Their latest reply was: "{user_message}"
 
 Task:
 1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
@@ -617,7 +639,7 @@ def generate_medical_pitch(a1, a2, a3) -> str:
 The user's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
 Write exactly ONE paragraph in simple English using this exact structure (fill in the brackets based on their data):
-"The situation you explained (mention specific situation causing effect) suggests you have (their medical conditions like insulin sensitivity or pcos or obesity whatever fits them). In this (simply scientifically explain what happens in it relating to them) because of which (their pain or problem they told they are suffering)."
+"The situation you explained (mention specific situation causing effect) they suggest you have (their medical conditions or problem like insulin sensitivity or PCOS or obesity whatever they have, make sure it’s what they have) in this (simply scientifically explain what happens in it relating to them) because of which (their pain or problem they told they are suffering)."
 
 GOAL: educate them about their problem. This is critical: use scientific terms but explain them simply enough that they understand.
 
@@ -644,9 +666,9 @@ def generate_fear_pitch(a1, a2, a3) -> str:
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
 Write exactly ONE paragraph in simple English using this exact structure to install a realistic fear element:
-"In long term it can cause (tell what happens if it is left untreated, like reaching 90+ or 100+ weight, diabetes, losing body shape, penguin walk, black neck, pcos, arthritis, or whatever fits THEIR specific problem)."
+"In long term it can cause (tell what happens if we leave it untreated but make sure its according to their problem and they are only 2 or 3 things max, don’t intimidate them just tell what could possibly be happening if left unsolved)."
 
-GOAL: install the fear element of what might happen if they don't take action now, according to their condition. Do not make the fear paralyzing: just enough so they know it can lead to a worse and harder to solve problem in future.
+GOAL: educate them that what might happen if action is not taken now. Do not make the fear paralyzing: just enough so they know it can lead to a worse and harder to solve problem in future. Only mention 2 or 3 things not more.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -660,7 +682,7 @@ def generate_plan_explain(a1, a2, a3) -> str:
     prompt = f"""{_FEMALE}
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
-In one or two very short simple English sentences, explain how a few diet changes plus vitamins and a tea will scientifically address their specific problem and cause weight loss within weeks. Start the sentence continuing naturally after the words "this will" (for example start with a verb like "fix", "reduce", "balance").
+In one or two very short simple English sentences, explain how well it will cure their scientific problem and cause weight loss, in few words. Start the sentence continuing naturally after the words "vitamins and a tea," (for example start with a verb like "fix", "reduce", "balance").
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -718,15 +740,30 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             return
         await send(text)
 
-    # STATE 0: NEW USER (30 SECOND DELAY)
+    # STATE 0: NEW USER (30s delay) — but first ANALYZE her opening message so
+    # the bot LISTENS before it talks: instant opt-outs park immediately, and
+    # any question she asked gets its answer right after the greeting.
     if not row:
         with _db() as conn:
             conn.execute("INSERT INTO users (user_phone, bot_phone_id, chat_stage) VALUES (?, ?, 1)",
                          (sender_phone, bot_phone_id))
 
+        opening = await asyncio.to_thread(_safe_opening, message_text, sender_phone)
+        if opening.get("refusal"):
+            log.info("--> [OPT-OUT] %s refused on first contact", sender_phone)
+            await asyncio.sleep(SHORT_GAP)
+            await send(MSG_GOODBYE)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = 1, chat_stage = ? "
+                             "WHERE user_phone = ?", (STAGE_OPTED_OUT, sender_phone))
+            return
+
         log.info("--> [NEW USER] Delaying 30s before first response to %s", sender_phone)
         await asyncio.sleep(30)
         await send(MSG_1)
+        if opening.get("answer"):
+            await asyncio.sleep(INTAKE_GAP)
+            await send(opening["answer"])
         return
 
     stage, a1, a2, a3, stored_analysis, resume_stage = row
@@ -781,6 +818,24 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     # STATE MACHINE ADVANCEMENT (TIERED PACING: 4s intake, 7s short, 12s big)
     if stage == 1:
+        # Listen first: answer her question from the FAQ knowledge base, hold
+        # pauses gently, park opt-outs — THEN invite her into the questions.
+        op = await asyncio.to_thread(_safe_opening, message_text, sender_phone)
+        if op.get("refusal"):
+            log.info("--> [OPT-OUT] %s declined at stage 1", sender_phone)
+            await asyncio.sleep(SHORT_GAP)
+            await send(MSG_GOODBYE)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = 1, chat_stage = ? "
+                             "WHERE user_phone = ?", (STAGE_OPTED_OUT, sender_phone))
+            return
+        if op.get("pause"):
+            await asyncio.sleep(INTAKE_GAP)
+            await send(MSG_PAUSE)
+            return
+        if op.get("answer"):
+            await asyncio.sleep(INTAKE_GAP)
+            await send(op["answer"])
         await asyncio.sleep(INTAKE_GAP)
         await send(MSG_2)
         await asyncio.sleep(INTAKE_GAP)
