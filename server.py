@@ -2,10 +2,10 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v5) is unchanged: resume-not-repeat bursts, barge-in abort,
-reply-lag-aware intent, pause handling, pacing tiers (4s/7s/12s), no-cliche
-short answers, you/your addressing, non-text/screenshot acknowledgments,
-state resume from disk on restart.
+Everything else (v7) is unchanged: opt-out/refusal parking + resume, typing
+indicator, resume-not-repeat bursts, barge-in abort, reply-lag intent, pause
+handling, pacing tiers (4s/7s/12s), no-cliche short answers, you/your
+addressing, non-text acks, state resume from disk.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -100,6 +100,16 @@ MSG_SCREENSHOT = ("JazakAllah Ma'am! 🌸 We have received your screenshot. Our 
 MSG_TYPE_ONLY = ("Sorry Ma'am, I can understand text messages only. Kindly type your "
                  "reply here and I will help you right away 😊")
 
+# Opt-out flow: she said no / stop / not interested — acknowledge ONCE, park
+# her, never re-ask. If she ever returns, resume from resume_stage.
+MSG_GOODBYE = ("No problem at all Ma'am 🌸 Thank you for your time. If you ever "
+               "change your mind, just message me here and we can pick up right "
+               "where you left off.")
+MSG_OPTOUT_FINAL = "Of course Ma'am, take care 🌸"
+MSG_WELCOME_BACK = "Welcome back Ma'am! 😊 Continuing right from where you left off."
+STAGE_OPTED_OUT = 50        # goodbye sent; one final soft line allowed
+STAGE_OPTED_OUT_HARD = 51   # final line sent; stay respectfully silent unless she re-engages
+
 # ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
 PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
 PITCH_3 = "are you getting my point?"                                                                     # Message 3
@@ -149,6 +159,8 @@ def setup_database() -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "analysis_text" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN analysis_text TEXT")
+    if "resume_stage" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN resume_stage INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -287,7 +299,7 @@ def verify_webhook(request: Request) -> Response:
 
 
 # ------------------------------------------------- 15-20s debounce machinery
-_buffers: dict[str, list[str]] = {}
+_buffers: dict[str, list[tuple[str, str]]] = {}  # (message_id, text) per lead
 _workers: dict[str, asyncio.Task] = {}
 _interrupted: set[str] = set()  # leads who spoke while we were mid-reply
 
@@ -335,7 +347,7 @@ def _enqueue(sender_phone: str, bot_phone_id: str, message_id: str, message_text
     if _seen_or_mark(message_id):
         log.info("Duplicate delivery of %s — skipping", message_id)
         return
-    _buffers.setdefault(sender_phone, []).append(message_text)
+    _buffers.setdefault(sender_phone, []).append((message_id, message_text))
     if message_text.strip():
         _interrupted.add(sender_phone)  # fresh input: abort any in-flight burst ASAP
     worker = _workers.get(sender_phone)
@@ -351,15 +363,23 @@ async def _conversation_worker(sender_phone: str, bot_phone_id: str) -> None:
     try:
         while True:
             await asyncio.sleep(random.uniform(DEBOUNCE_MIN, DEBOUNCE_MAX))
-            texts = _buffers.pop(sender_phone, [])
-            if not texts:
+            items = _buffers.pop(sender_phone, [])
+            if not items:
                 break
-            combined = "\n".join(t for t in texts if t).strip()
+            combined = "\n".join(t for _mid, t in items if t).strip()
             if not combined:
                 break
-            if len(texts) > 1:
+            if len(items) > 1:
                 log.info("--> [BATCHED] %d messages from %s combined into one reply",
-                         len(texts), sender_phone)
+                         len(items), sender_phone)
+            # Show 'typing...' on her phone while the reply is being composed.
+            last_mid = next((m for m, t in reversed(items) if m), "")
+            if last_mid:
+                try:
+                    await asyncio.to_thread(meta.send_typing_indicator,
+                                            bot_phone_id, last_mid)
+                except Exception:
+                    log.debug("typing indicator failed (cosmetic)", exc_info=True)
             add_history(sender_phone, "user", combined)
             await _dispatch_safe(sender_phone, bot_phone_id, combined)
     except asyncio.CancelledError:
@@ -468,7 +488,8 @@ Task:
 1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
 2. If NO and the message is a PAUSE or DELAY message ("wait", "one minute", "brb", "I will be back", "busy right now", "ruko", "baad mein batati hoon"): is_valid = false, and reply_if_invalid is ONLY a short warm acknowledgment such as "Sure Ma'am, take your time. I am right here whenever you are ready." Do NOT repeat the questions, do NOT scold, and do NOT say you can only help with inquiries.
 3. If NO and they are asking a valid question about livelyher: answer it directly in 1 or 2 short specific sentences. Nothing else. Then politely ask them to answer the original questions.
-4. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
+4. If NO and the message is a REFUSAL or OPT-OUT (she declines, is not interested, does not want to proceed/continue/order, says stop, or asks to be left alone — for example "no I don't wanna proceed", "not interested", "I don't want to order", "please stop"): is_valid = false, refusal = true, reply_if_invalid = null. The system sends a fixed graceful goodbye, so write nothing.
+5. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -478,7 +499,8 @@ CONSTRAINTS:
 Return ONLY pure JSON in this format:
 {{
   "is_valid": true or false,
-  "reply_if_invalid": "Your response here if false, else null"
+  "refusal": true or false,
+  "reply_if_invalid": "Your response here if false (and not a refusal), else null"
 }}"""
 
     response = groq().chat.completions.create(
@@ -505,6 +527,8 @@ Classify the user's LATEST message, following these rules strictly:
 RULE A - REPLY LAG: People read and reply late. Her message may be answering an EARLIER bot message, not the most recent one. Look at the conversation history and decide WHICH bot message she is actually responding to. If she is clearly reacting to something older (for example talking about the video, the analysis, or an earlier question) while a NEWER question is still open and she did not answer that newer question, that is NOT fresh agreement: is_valid = false.
 RULE B - MIXED SIGNALS: If a quick "ok / yes / theek hai" is bundled with ANY hesitation, delay, condition, inability, or question ("ok but...", "ok I will watch the video later and then decide", "wait one minute", "I can't right now"), HESITATION WINS: is_valid = false.
 
+RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not interested", "I don't want it", "I don't want to order", "I don't want to continue", "stop messaging me", "leave me alone", "don't contact me again", or any firm angry refusal), set stop = true and is_valid = false. The reply is then ONE short graceful goodbye sentence with zero pressure and zero questions (for example "No problem at all Ma'am, thank you for your time."). Do NOT re-ask anything and do NOT invite her to continue.
+
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
    - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
@@ -518,7 +542,7 @@ CONSTRAINTS:
 - When unsure between agreement and hesitation, choose hesitation.
 
 Return ONLY pure JSON in this format:
-{{"is_valid": true/false, "reply": "string or null"}}"""
+{{"is_valid": true/false, "reply": "string or null", "stop": true/false}}"""
 
     response = groq().chat.completions.create(
         model=GROQ_MODEL,
@@ -622,7 +646,7 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     _interrupted.discard(sender_phone)
     with _db() as conn:
         cursor = conn.execute(
-            "SELECT chat_stage, answers_1, answers_2, answers_3, analysis_text "
+            "SELECT chat_stage, answers_1, answers_2, answers_3, analysis_text, resume_stage "
             "FROM users WHERE user_phone = ?", (sender_phone,))
         row = cursor.fetchone()
 
@@ -657,16 +681,50 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         await send(MSG_1)
         return
 
-    stage, a1, a2, a3, stored_analysis = row
+    stage, a1, a2, a3, stored_analysis, resume_stage = row
 
     with _db() as conn:
         conn.execute("UPDATE users SET bot_phone_id = ? WHERE user_phone = ?",
                      (bot_phone_id, sender_phone))
 
+    # OPT-OUT RESIDENCY: she said stop. Only a clear re-engagement brings her
+    # back — resumed exactly where she left off, never re-asked, never restarted.
+    if stage in (STAGE_OPTED_OUT, STAGE_OPTED_OUT_HARD):
+        chk = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
+        if chk.get("stop"):
+            if stage == STAGE_OPTED_OUT:
+                await asyncio.sleep(SHORT_GAP)
+                await csend(MSG_OPTOUT_FINAL, dedupe=False)
+                with _db() as conn:
+                    conn.execute("UPDATE users SET chat_stage = ? WHERE user_phone = ?",
+                                 (STAGE_OPTED_OUT_HARD, sender_phone))
+            else:
+                log.info("--> [OPT-OUT] %s still declining — respectfully silent",
+                         sender_phone)
+            return
+        await asyncio.sleep(SHORT_GAP)
+        await csend(MSG_WELCOME_BACK, dedupe=False)
+        resume = resume_stage if 0 < resume_stage < STAGE_OPTED_OUT else 1
+        with _db() as conn:
+            conn.execute("UPDATE users SET chat_stage = ? WHERE user_phone = ?",
+                         (resume, sender_phone))
+        log.info("--> [RESUMED] %s came back — continuing at stage %s",
+                 sender_phone, resume)
+        stage = resume
+
     # Smart Intent Checker (stage 6+): hesitation/objections/questions no
     # longer advance the funnel — only clear agreement does.
     if stage >= 6:
         intent = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
+        if intent.get("stop"):
+            log.info("--> [OPT-OUT] %s declined at stage %s — graceful goodbye, parked",
+                     sender_phone, stage)
+            await asyncio.sleep(SHORT_GAP)
+            await csend(intent.get("reply") or MSG_GOODBYE, dedupe=False)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = ?, chat_stage = ? "
+                             "WHERE user_phone = ?", (stage, STAGE_OPTED_OUT, sender_phone))
+            return
         if not intent.get("is_valid"):
             log.info("--> [HOLD] Objection/question/hesitation — stage %s frozen.", stage)
             await asyncio.sleep(SHORT_GAP)
@@ -685,7 +743,13 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage == 2:
         val = await asyncio.to_thread(_validate_or_accept, SET_1, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
-        if val.get("is_valid"):
+        if val.get("refusal"):
+            log.info("--> [OPT-OUT] %s declined during intake (stage 2) — parked", sender_phone)
+            await send(MSG_GOODBYE)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = 2, chat_stage = ? "
+                             "WHERE user_phone = ?", (STAGE_OPTED_OUT, sender_phone))
+        elif val.get("is_valid"):
             with _db() as conn:
                 conn.execute("UPDATE users SET chat_stage = 3, answers_1 = ? WHERE user_phone = ?",
                              (message_text, sender_phone))
@@ -696,7 +760,13 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage == 3:
         val = await asyncio.to_thread(_validate_or_accept, SET_2, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
-        if val.get("is_valid"):
+        if val.get("refusal"):
+            log.info("--> [OPT-OUT] %s declined during intake (stage 3) — parked", sender_phone)
+            await send(MSG_GOODBYE)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = 3, chat_stage = ? "
+                             "WHERE user_phone = ?", (STAGE_OPTED_OUT, sender_phone))
+        elif val.get("is_valid"):
             with _db() as conn:
                 conn.execute("UPDATE users SET chat_stage = 4, answers_2 = ? WHERE user_phone = ?",
                              (message_text, sender_phone))
@@ -707,7 +777,13 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage == 4:
         val = await asyncio.to_thread(_validate_or_accept, SET_3, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
-        if val.get("is_valid"):
+        if val.get("refusal"):
+            log.info("--> [OPT-OUT] %s declined during intake (stage 4) — parked", sender_phone)
+            await send(MSG_GOODBYE)
+            with _db() as conn:
+                conn.execute("UPDATE users SET resume_stage = 4, chat_stage = ? "
+                             "WHERE user_phone = ?", (STAGE_OPTED_OUT, sender_phone))
+        elif val.get("is_valid"):
             await send(MSG_END)
             await asyncio.sleep(INTAKE_GAP)
             await send(ABOUT_VIDEO)
