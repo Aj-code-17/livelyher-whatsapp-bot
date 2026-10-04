@@ -1,16 +1,13 @@
-"""Livelyher — WhatsApp conversational CRM & intake bot.
+"""Livelyher — TESTING BUILD (do NOT deploy to production).
 
-Receives WhatsApp Cloud API webhooks from Meta, walks each lead through a
-multi-stage intake funnel (with LLM answer validation), and executes an
-instant consultative sales pitch (new DOCX template) with human-like delays.
+Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
+Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
+Everything else (v3) is unchanged: analysis is still pre-generated and reused,
+hesitation/payment fixes, debounce batching, sanitizer, chat history, sweeps.
 
-Behaviour (v2):
-- Ani is FEMALE — prompts forbid masculine speech, always.
-- No hyphens/dashes/markdown in any AI-generated text (sanitized at source).
-- Per-user chat history stored in SQLite and fed back as LLM context.
-- 15-20s debounce: rapid consecutive messages are combined and answered ONCE.
-- Template (hardcoded) messages stay in Roman Urdu; AI-generated replies use
-  simple English only.
+Use:
+    uvicorn server_testing:app --host 0.0.0.0 --port 8000
+Switch back to the real timer by running server.py instead.
 """
 
 from __future__ import annotations
@@ -80,7 +77,6 @@ def _clean(text: str) -> str:
 
 
 # ------------------------------------------------------------ conversation templates
-# (Hardcoded templates stay in Roman Urdu, exactly as provided.)
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
 MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah!"
 SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) kitna hai, aur aapki Height kya hai?\n2. Ye weight gain kab shuru hua, shaadi ke baad, pregnancy/delivery ke baad, ya pichle 1–2 saalon mein achanak barha?\n3. Body mein stubborn weight sabse zyada kahan mehsoos hota hai — lower belly/stomach fat, hips/thighs, ya overall heavy bloating?"
@@ -92,22 +88,24 @@ MSG_WAIT = ("Perfect Ma'am! 😊 Our coaches are analysing your answers right no
             "we'll reach out to you shortly, Inshallah.")
 INVALID_FALLBACK = ("Ma'am, could you please answer the questions above? "
                     "They help our coaches understand your situation properly.")
+HESITATION_FALLBACK = ("No problem Ma'am 😊 take your time, I am right here whenever "
+                       "you are ready to continue.")
+MSG_CONFIRM_PAYMENT = ("Perfect Ma'am! 🎉 Once you have made the payment, just share "
+                       "the screenshot here and we will confirm your spot right away, "
+                       "Insha'Allah.")
 
-# ---------------- NEW DOCX PITCH TEMPLATE (Messages 1..17 as provided)
-# PITCH numbering kept from previous version so the stage layout is unchanged.
-PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1 (as-is, wait for reply)
-# Message 2 = AI medical pitch (generate_medical_pitch)
-PITCH_3 = "are you getting my point?"                                                                     # Message 3 (as-is, wait for reply)
-# Message 4 = AI fear pitch (generate_fear_pitch)
-PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona bohat zaroori hota hai...."  # Message 5 (as-is)
-PITCH_6_TEMPLATE = "So, for that, I will make a few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also follow the mood plan because it will help you a lot with mood and energy"  # Message 6 (AI fills the bracket)
-PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy to follow and also, we will always be available to you whenever you need any help.."  # Message 7 (as-is)
+# ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
+PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
+PITCH_3 = "are you getting my point?"                                                                     # Message 3
+PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona bohat zaroori hota hai...."  # Message 5
+PITCH_6_TEMPLATE = "So, for that, I will make a few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also follow the mood plan because it will help you a lot with mood and energy"  # Message 6
+PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy to follow and also, we will always be available to you whenever you need any help.."  # Message 7
 PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version"  # Message 8
 PITCH_9 = "https://your-video-link-here.com/video.mp4"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
-PITCH_10 = "let me know once you have seen it, I will share more details than .."                          # Message 11 (wait for reply)
-PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah ☺️"  # Message 12 (as-is)
-PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 15 (wait for reply)
-PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 16 (as-is)
+PITCH_10 = "let me know once you have seen it, I will share more details than .."                          # Message 11
+PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah ☺️"  # Message 12
+PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 15
+PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 16
 PITCH_16 = "For payment you can use following accounts:\n\nBank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher"  # Message 17  <--- ADD BANK DETAILS HERE
 
 
@@ -128,18 +126,23 @@ def setup_database() -> None:
             answers_1 TEXT,
             answers_2 TEXT,
             answers_3 TEXT,
-            analysis_send_at TEXT
+            analysis_send_at TEXT,
+            analysis_text TEXT          -- pre-generated analysis, stored at intake
         );
         CREATE TABLE IF NOT EXISTS seen_messages (message_id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS chat_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_phone TEXT NOT NULL,
-            role TEXT NOT NULL,          -- 'user' | 'bot'
+            role TEXT NOT NULL,
             content TEXT NOT NULL,
             ts REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_history_phone ON chat_history(user_phone, id);
     """)
+    # Migration for databases created before analysis_text existed:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "analysis_text" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN analysis_text TEXT")
     conn.commit()
     conn.close()
 
@@ -169,9 +172,62 @@ def _history_block(user_phone: str, limit: int = 10) -> str:
     return "\n".join(f"{'user' if r['role'] == 'user' else 'bot'}: {r['content']}" for r in rows)
 
 
-# Scheduler logic disabled for testing purposes (bypassed in Stage 4)
+def _utcnow_plus(minutes: float) -> str:
+    return (datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(minutes=minutes)).isoformat()
+
+
+# ------------------------------------------------- 30-minute analysis delivery
+def _ensure_analysis(phone: str, bot_id: str) -> None:
+    """Send PITCH_1 to one lead whose analysis came due; marks stage 6 only
+    AFTER a successful send so failures are retried next tick / next boot."""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT answers_1, answers_2, answers_3, analysis_text "
+            "FROM users WHERE user_phone=?", (phone,)).fetchone()
+    if not row:
+        return
+    a1, a2, a3, stored = row
+
+    if not stored:
+        # LLM was unreachable at intake time — generate it now, lazily.
+        stored = _safe_medical_pitch(a1, a2, a3)
+
+    meta.send_whatsapp_text(bot_id or PHONE_NUMBER_ID, phone, PITCH_1)
+    add_history(phone, "bot", PITCH_1)
+    log.info("[WA] -> %s: 30-minute analysis doorbell sent", phone)
+
+    with _db() as conn:
+        conn.execute(
+            "UPDATE users SET chat_stage=6, analysis_text=COALESCE(analysis_text, ?) "
+            "WHERE user_phone=?", (stored, phone))
+        conn.commit()
+
+
 def check_scheduled_analyses() -> None:
-    pass
+    """Runs every 60s AND once at every server boot: delivers every analysis
+    that is due but was never sent — this is the wake-up verification step."""
+    conn = None
+    try:
+        conn = _db()
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        due = conn.execute(
+            "SELECT user_phone, bot_phone_id FROM users "
+            "WHERE chat_stage = 5 AND analysis_send_at <= ?", (now,)).fetchall()
+        conn.close()
+        conn = None
+
+        for phone, bot_id in due:
+            try:
+                _ensure_analysis(phone, bot_id)
+            except Exception:
+                # Don't update the stage — next tick/boot will try again.
+                log.exception("Analysis delivery failed for %s (will retry)", phone)
+    except Exception:
+        log.exception("check_scheduled_analyses failed")
+    finally:
+        if conn:
+            conn.close()
 
 
 _scheduler: BackgroundScheduler | None = None
@@ -184,6 +240,11 @@ def _start_background() -> None:
         _scheduler = BackgroundScheduler()
         _scheduler.add_job(check_scheduled_analyses, "interval", seconds=60)
         _scheduler.start()
+        # WAKE-UP SWEEP: on every boot, immediately check for overdue analyses
+        # (covers server sleep, restarts, deploys, crashes).
+        _scheduler.add_job(check_scheduled_analyses)
+        log.info("Livelyher started (model=%s, delay=%s min) — scheduler + boot sweep armed",
+                 GROQ_MODEL, ANALYSIS_DELAY_MINUTES)
 
 
 @asynccontextmanager
@@ -194,7 +255,7 @@ async def lifespan(app: FastAPI):
         _scheduler.shutdown()
 
 
-app = FastAPI(title="Livelyher WhatsApp Bot", lifespan=lifespan)
+app = FastAPI(title="Livelyher WhatsApp Bot — TESTING (no 30-min wait)", lifespan=lifespan)
 _start_background()
 
 
@@ -215,14 +276,11 @@ def verify_webhook(request: Request) -> Response:
 
 
 # ------------------------------------------------- 15-20s debounce machinery
-# Rapid consecutive messages from the same lead are collected and answered
-# ONCE, together — so the bot never replies twice to a double-text.
 _buffers: dict[str, list[str]] = {}
 _workers: dict[str, asyncio.Task] = {}
 
 
 def _seen_or_mark(message_id: str) -> bool:
-    """True if this Meta message id was already processed."""
     if not message_id:
         return False
     with _db() as conn:
@@ -244,14 +302,14 @@ def _enqueue(sender_phone: str, bot_phone_id: str, message_id: str, message_text
 
 
 async def _conversation_worker(sender_phone: str, bot_phone_id: str) -> None:
-    """One worker per lead. Waits 15-20s of silence, then processes whatever
-    arrived, combined, in a single pass through the state machine."""
+    """One worker per lead: waits 15-20s of silence, then processes everything
+    that arrived — combined — in a single pass, so no double replies."""
     try:
         while True:
             await asyncio.sleep(random.uniform(DEBOUNCE_MIN, DEBOUNCE_MAX))
             texts = _buffers.pop(sender_phone, [])
             if not texts:
-                break  # quiet — hand over; next message spawns a fresh worker
+                break
             combined = "\n".join(t for t in texts if t).strip()
             if not combined:
                 break
@@ -363,13 +421,14 @@ The user is in a consultation funnel. Here is the recent conversation for contex
 
 User just said: "{user_msg}"
 
-Task:
-1. Considering the conversation above: are they generally agreeing to proceed, answering "yes/ok", or saying "I am here"? (Return is_valid: true)
-2. If they are asking an out of context question or complaining, return is_valid: false, and write a polite, short reply addressing their concern.
+Classify the user's LATEST message:
+1. is_valid TRUE only for CLEAR AGREEMENT, CONFIRMATION, presence ("I am here"), or a direct yes to the question the bot last asked (e.g. "yes", "ok", "sure", "send it", "I am ready").
+2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later"), OBJECTIONS (price, trust, doubts), QUESTIONS about livelyher or anything else, or COMPLAINTS. In this case write a polite, short, empathetic reply that acknowledges their concern without pressure, and (if the funnel was waiting on a confirmation) softly invites them to continue whenever ready.
 
 CONSTRAINTS:
 - {_ENGLISH}
 - NEVER USE MARKDOWN (no *, #, -, etc) and never use any hyphen or dash character. Plain text only.
+- When unsure between agreement and hesitation, choose hesitation.
 
 Return ONLY pure JSON in this format:
 {{"is_valid": true/false, "reply": "string or null"}}"""
@@ -385,8 +444,16 @@ Return ONLY pure JSON in this format:
     return result
 
 
+def _intent_or_hold(user_msg: str, user_phone: str) -> dict:
+    """Never let an AI hiccup freeze the lead mid-pitch."""
+    try:
+        return evaluate_intent(user_msg, user_phone)
+    except Exception:
+        log.exception("Intent check crashed — holding the stage politely")
+        return {"is_valid": False, "reply": None}
+
+
 def generate_medical_pitch(a1, a2, a3) -> str:
-    # DOCX Message 2 — educate them about their problem, scientific yet simple.
     prompt = f"""{_FEMALE}
 The user's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
@@ -403,8 +470,17 @@ CONSTRAINTS:
     return _clean(response.choices[0].message.content)
 
 
+def _safe_medical_pitch(a1, a2, a3) -> str | None:
+    """Try to generate the analysis; return None (not a crash) if the LLM is
+    unavailable — the scheduler will retry at delivery time."""
+    try:
+        return generate_medical_pitch(a1, a2, a3)
+    except Exception:
+        log.exception("Could not pre-generate analysis — will retry on delivery")
+        return None
+
+
 def generate_fear_pitch(a1, a2, a3) -> str:
-    # DOCX Message 4 — realistic fear element, tailored, not paralyzing.
     prompt = f"""{_FEMALE}
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
@@ -422,8 +498,6 @@ CONSTRAINTS:
 
 
 def generate_plan_explain(a1, a2, a3) -> str:
-    # DOCX Message 6 bracket — one short plain English clause explaining how the
-    # diet changes + vitamins + tea scientifically cure their diagnosed problem.
     prompt = f"""{_FEMALE}
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
@@ -456,8 +530,8 @@ async def _dispatch_safe(sender_phone: str, bot_phone_id: str, message_text: str
 async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> None:
     with _db() as conn:
         cursor = conn.execute(
-            "SELECT chat_stage, answers_1, answers_2, answers_3 FROM users WHERE user_phone = ?",
-            (sender_phone,))
+            "SELECT chat_stage, answers_1, answers_2, answers_3, analysis_text "
+            "FROM users WHERE user_phone = ?", (sender_phone,))
         row = cursor.fetchone()
 
     async def send(text: str):
@@ -476,19 +550,20 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         await send(MSG_1)
         return
 
-    stage, a1, a2, a3 = row
+    stage, a1, a2, a3, stored_analysis = row
 
     with _db() as conn:
         conn.execute("UPDATE users SET bot_phone_id = ? WHERE user_phone = ?",
                      (bot_phone_id, sender_phone))
 
-    # Smart Intent Checker
+    # Smart Intent Checker (stage 6+): hesitation/objections/questions no
+    # longer advance the funnel — only clear agreement does.
     if stage >= 6:
-        intent = await asyncio.to_thread(evaluate_intent, message_text, sender_phone)
+        intent = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
         if not intent.get("is_valid"):
-            log.info("--> [OUT OF BAND] Answering user's question instead of advancing state.")
+            log.info("--> [HOLD] Objection/question/hesitation — stage %s frozen.", stage)
             await asyncio.sleep(10)
-            await send(intent.get("reply") or "Please confirm you are ready to proceed.")
+            await send(intent.get("reply") or HESITATION_FALLBACK)
             return
 
     # STATE MACHINE ADVANCEMENT (WITH 10-15s DELAYS)
@@ -530,23 +605,36 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             await asyncio.sleep(10)
             await send(ABOUT_VIDEO)
 
-            # --- BYPASSING 30 MIN DELAY FOR TESTING ---
+            # Pre-generate the analysis so stage 6 can reuse it instantly.
+            analysis = await asyncio.to_thread(_safe_medical_pitch, a1, a2, message_text)
+
+            # --- TESTING BYPASS: skip the 30-minute timer entirely ---
             await asyncio.sleep(12)
             await send(PITCH_1)
             with _db() as conn:
-                # Bypass Stage 5 and jump straight to Stage 6
-                conn.execute("UPDATE users SET chat_stage = 6, answers_3 = ? WHERE user_phone = ?",
-                             (message_text, sender_phone))
+                conn.execute(
+                    "UPDATE users SET chat_stage = 6, answers_3 = ?, analysis_send_at = ?, "
+                    "analysis_text = ? WHERE user_phone = ?",
+                    (message_text, datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                     analysis, sender_phone))
+            log.info("--> [TESTING] 30-min timer bypassed for %s — straight to stage 6",
+                     sender_phone)
         else:
             await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
 
     elif stage == 5:
+        # Still inside the 30-minute wait — hold them gently.
         await asyncio.sleep(10)
         await send(MSG_WAIT)
 
     elif stage == 6:
-        # Lead replied to PITCH_1 ("I am here") -> DOCX Message 2 + Message 3
-        msg2 = await asyncio.to_thread(generate_medical_pitch, a1, a2, a3)
+        # Lead replied to PITCH_1 ("I am here") -> STORED Message 2 + Message 3
+        msg2 = stored_analysis
+        if not msg2:
+            msg2 = await asyncio.to_thread(generate_medical_pitch, a1, a2, a3)
+            with _db() as conn:
+                conn.execute("UPDATE users SET analysis_text = ? WHERE user_phone = ?",
+                             (msg2, sender_phone))
         await asyncio.sleep(10)
         await send(msg2)
         await asyncio.sleep(12)
@@ -555,7 +643,6 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             conn.execute("UPDATE users SET chat_stage = 7 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 7:
-        # Lead replied to PITCH_3 -> DOCX Message 4 (AI) + 5 + 6 (AI clause) + 7
         msg4 = await asyncio.to_thread(generate_fear_pitch, a1, a2, a3)
         clause6 = await asyncio.to_thread(generate_plan_explain, a1, a2, a3)
         await asyncio.sleep(10)
@@ -570,7 +657,6 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             conn.execute("UPDATE users SET chat_stage = 8 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 8:
-        # Lead replied to the Message 5-7 burst -> DOCX Message 8 + video (10) + 11
         await asyncio.sleep(10)
         await send(PITCH_8)
         await asyncio.sleep(10)
@@ -581,7 +667,6 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             conn.execute("UPDATE users SET chat_stage = 9 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 9:
-        # Lead replied to PITCH_10 ("seen the video") -> DOCX Message 12 + Message 15
         await asyncio.sleep(10)
         await send(PITCH_11)
         await asyncio.sleep(10)
@@ -590,10 +675,15 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             conn.execute("UPDATE users SET chat_stage = 10 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 10:
-        # Lead replied to PITCH_13 ("send questions") -> DOCX Message 16 + Message 17
         await asyncio.sleep(10)
         await send(PITCH_15)
         await asyncio.sleep(10)
         await send(PITCH_16)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 11 WHERE user_phone = ?", (sender_phone,))
+
+    elif stage >= 11:
+        # Payment stage: never go silent again. They agreed/confirmed —
+        # ask for the payment screenshot to close the loop.
+        await asyncio.sleep(10)
+        await send(MSG_CONFIRM_PAYMENT)
