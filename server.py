@@ -2,10 +2,10 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v4) is unchanged: barge-in burst abort, reply-lag-aware
-intent checker, pause handling, non-text/screenshot acknowledgments,
-hesitation/payment fixes, pre-generated analysis reuse, debounce batching,
-sanitizer, chat history, wake-up sweeps.
+Everything else (v5) is unchanged: resume-not-repeat bursts, barge-in abort,
+reply-lag-aware intent, pause handling, pacing tiers (4s/7s/12s), no-cliche
+short answers, you/your addressing, non-text/screenshot acknowledgments,
+state resume from disk on restart.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -249,8 +249,13 @@ def _start_background() -> None:
         # WAKE-UP SWEEP: on every boot, immediately check for overdue analyses
         # (covers server sleep, restarts, deploys, crashes).
         _scheduler.add_job(check_scheduled_analyses)
-        log.info("Livelyher started (model=%s, delay=%s min) — scheduler + boot sweep armed",
-                 GROQ_MODEL, ANALYSIS_DELAY_MINUTES)
+    with _db() as conn:
+        leads = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        rows = conn.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0]
+    log.info("State restored from disk: %d leads, %d history rows (restart & update safe)",
+             leads, rows)
+    log.info("Livelyher started (model=%s, delay=%s min) — scheduler + boot sweep armed",
+             GROQ_MODEL, ANALYSIS_DELAY_MINUTES)
 
 
 @asynccontextmanager
@@ -289,6 +294,32 @@ _interrupted: set[str] = set()  # leads who spoke while we were mid-reply
 
 class _BurstAborted(Exception):
     """The lead sent a new message while a multi-message burst was in flight."""
+
+
+# ------------------------------------------------------------------ Reply pacing
+# Information-collection (intake Q&A): quick 4s. Short messages: max 7s.
+# Big sections: 12s. All env-tunable.
+INTAKE_GAP = float(os.getenv("INTAKE_GAP", "4"))
+SHORT_GAP = float(os.getenv("SHORT_GAP", "7"))
+BIG_GAP = float(os.getenv("BIG_GAP", "12"))
+BIG_MESSAGE_MIN = 200  # chars; messages this long or longer count as "big"
+
+
+async def _auto_gap(text: str) -> None:
+    """Typing-realistic pause sized by the message about to be sent."""
+    await asyncio.sleep(BIG_GAP if len(text) >= BIG_MESSAGE_MIN else SHORT_GAP)
+
+
+_gen_cache: dict[tuple[str, str], str] = {}  # (phone, role) -> generated text
+
+
+def _already_sent(sender_phone: str, text: str) -> bool:
+    """True if this exact bot message is already in her persistent history."""
+    with _db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM chat_history WHERE user_phone = ? AND role = 'bot'"
+            " AND content = ?", (sender_phone, text)).fetchone()[0]
+    return n > 0
 
 
 def _seen_or_mark(message_id: str) -> bool:
@@ -402,7 +433,7 @@ async def _ack_nontext(sender_phone: str, bot_phone_id: str, mtype: str) -> None
             row = conn.execute("SELECT chat_stage FROM users WHERE user_phone = ?",
                                (sender_phone,)).fetchone()
         stage = row[0] if row else 0
-        await asyncio.sleep(6)
+        await asyncio.sleep(SHORT_GAP)
         text = MSG_SCREENSHOT if (mtype == "image" and stage >= 10) else MSG_TYPE_ONLY
         await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
         add_history(sender_phone, "bot", text)
@@ -413,9 +444,16 @@ async def _ack_nontext(sender_phone: str, bot_phone_id: str, mtype: str) -> None
 
 # ------------------------------------------------------------------ AI Generators
 _FEMALE = ("You are Ani, a FEMALE health coach from 'livelyher'. Always speak as a "
-           "woman: use feminine wording only, never masculine forms.")
+           "woman: use feminine wording only, never masculine forms. Always address "
+           "the customer directly as 'you' or 'your', never refer to her in third "
+           "person as 'her' or 'she'.")
 
 _ENGLISH = "Write strictly in simple, conversational English."
+
+_NO_CLICHES = ("NEVER use empathy cliches like 'I understand your concern', 'I hear "
+               "you', 'I totally understand', or similar filler. NEVER end with 'let "
+               "me know if you have any other questions or concerns' or similar. Be "
+               "direct, specific, and to the point.")
 
 
 def validate_answer(current_questions: str, user_message: str, user_phone: str) -> dict:
@@ -429,12 +467,13 @@ Their latest reply was: "{user_message}"
 Task:
 1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
 2. If NO and the message is a PAUSE or DELAY message ("wait", "one minute", "brb", "I will be back", "busy right now", "ruko", "baad mein batati hoon"): is_valid = false, and reply_if_invalid is ONLY a short warm acknowledgment such as "Sure Ma'am, take your time. I am right here whenever you are ready." Do NOT repeat the questions, do NOT scold, and do NOT say you can only help with inquiries.
-3. If NO and they are asking a valid question about livelyher: answer it briefly, then politely ask them to answer the original questions.
+3. If NO and they are asking a valid question about livelyher: answer it directly in 1 or 2 short specific sentences. Nothing else. Then politely ask them to answer the original questions.
 4. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
 
 CONSTRAINTS:
 - {_ENGLISH}
 - NEVER USE MARKDOWN (no *, #, -, etc) and never use any hyphen or dash character. Plain text only.
+- {_NO_CLICHES}
 
 Return ONLY pure JSON in this format:
 {{
@@ -467,11 +506,15 @@ RULE A - REPLY LAG: People read and reply late. Her message may be answering an 
 RULE B - MIXED SIGNALS: If a quick "ok / yes / theek hai" is bundled with ANY hesitation, delay, condition, inability, or question ("ok but...", "ok I will watch the video later and then decide", "wait one minute", "I can't right now"), HESITATION WINS: is_valid = false.
 
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
-2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. In this case write a polite, short, empathetic reply that matches exactly what she said (for example, if she cannot watch the video now, invite her to watch it whenever suits her and you will continue then), with zero pressure, and softly invite her to continue whenever she is ready.
+2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
+   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
+   - For HESITATION or DELAY: one short warm sentence telling her there is no rush and she can continue whenever she is ready. Nothing else.
+   - Never use empty empathy phrases. Answer to the point.
 
 CONSTRAINTS:
 - {_ENGLISH}
 - NEVER USE MARKDOWN (no *, #, -, etc) and never use any hyphen or dash character. Plain text only.
+- {_NO_CLICHES}
 - When unsure between agreement and hesitation, choose hesitation.
 
 Return ONLY pure JSON in this format:
@@ -588,16 +631,19 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         add_history(sender_phone, "bot", text)
         log.info("[WA] -> %s: %.80s", sender_phone, text)
 
-    async def csend(text: str):
-        """Burst-aware send: stops the rest of the burst the moment she speaks.
-
-        Used for every pitch-stage message so her reply can never arrive 'too
-        late' after we already advanced past her. The aborted burst simply
-        stops; her buffered message is then evaluated at the CURRENT stage
-        (the context she was actually answering in).
-        """
+    async def csend(text: str, dedupe: bool = True):
+        """Burst-aware send with resume semantics:
+        1. Aborts the remaining burst the moment she speaks (barge-in).
+        2. NEVER repeats a message already delivered to her — if this exact
+           text is already in her chat history (e.g. the burst was aborted
+           and is being resumed), it is skipped rather than sent twice.
+           Replies (AI-generated holds, payment confirmation) use
+           dedupe=False so she is never left on silence."""
         if sender_phone in _interrupted:
             raise _BurstAborted
+        if dedupe and _already_sent(sender_phone, text):
+            log.info("[WA] -> %s: (skip, already sent) %.60s", sender_phone, text)
+            return
         await send(text)
 
     # STATE 0: NEW USER (30 SECOND DELAY)
@@ -623,22 +669,22 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         intent = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
         if not intent.get("is_valid"):
             log.info("--> [HOLD] Objection/question/hesitation — stage %s frozen.", stage)
-            await asyncio.sleep(10)
-            await csend(intent.get("reply") or HESITATION_FALLBACK)
+            await asyncio.sleep(SHORT_GAP)
+            await csend(intent.get("reply") or HESITATION_FALLBACK, dedupe=False)
             return
 
-    # STATE MACHINE ADVANCEMENT (WITH 10-15s DELAYS)
+    # STATE MACHINE ADVANCEMENT (TIERED PACING: 4s intake, 7s short, 12s big)
     if stage == 1:
-        await asyncio.sleep(10)
+        await asyncio.sleep(INTAKE_GAP)
         await send(MSG_2)
-        await asyncio.sleep(12)
+        await asyncio.sleep(INTAKE_GAP)
         await send(SET_1)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 2 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 2:
         val = await asyncio.to_thread(_validate_or_accept, SET_1, message_text, sender_phone)
-        await asyncio.sleep(10)
+        await asyncio.sleep(INTAKE_GAP)
         if val.get("is_valid"):
             with _db() as conn:
                 conn.execute("UPDATE users SET chat_stage = 3, answers_1 = ? WHERE user_phone = ?",
@@ -649,7 +695,7 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     elif stage == 3:
         val = await asyncio.to_thread(_validate_or_accept, SET_2, message_text, sender_phone)
-        await asyncio.sleep(10)
+        await asyncio.sleep(INTAKE_GAP)
         if val.get("is_valid"):
             with _db() as conn:
                 conn.execute("UPDATE users SET chat_stage = 4, answers_2 = ? WHERE user_phone = ?",
@@ -660,10 +706,10 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     elif stage == 4:
         val = await asyncio.to_thread(_validate_or_accept, SET_3, message_text, sender_phone)
-        await asyncio.sleep(10)
+        await asyncio.sleep(INTAKE_GAP)
         if val.get("is_valid"):
             await send(MSG_END)
-            await asyncio.sleep(10)
+            await asyncio.sleep(INTAKE_GAP)
             await send(ABOUT_VIDEO)
 
             # Pre-generate the analysis so stage 6 can reuse it instantly.
@@ -685,7 +731,7 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     elif stage == 5:
         # Still inside the 30-minute wait — hold them gently.
-        await asyncio.sleep(10)
+        await asyncio.sleep(SHORT_GAP)
         await send(MSG_WAIT)
 
     elif stage == 6:
@@ -696,49 +742,58 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             with _db() as conn:
                 conn.execute("UPDATE users SET analysis_text = ? WHERE user_phone = ?",
                              (msg2, sender_phone))
-        await asyncio.sleep(10)
+        await _auto_gap(msg2)
         await csend(msg2)
-        await asyncio.sleep(12)
+        await _auto_gap(PITCH_3)
         await csend(PITCH_3)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 7 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 7:
-        msg4 = await asyncio.to_thread(generate_fear_pitch, a1, a2, a3)
-        clause6 = await asyncio.to_thread(generate_plan_explain, a1, a2, a3)
-        await asyncio.sleep(10)
+        # Generated once per lead, cached — so a barge-in RESUME never
+        # regenerates a slightly different duplicate of the same pitch.
+        msg4 = _gen_cache.get((sender_phone, "fear"))
+        if not msg4:
+            msg4 = await asyncio.to_thread(generate_fear_pitch, a1, a2, a3)
+            _gen_cache[(sender_phone, "fear")] = msg4
+        clause6 = _gen_cache.get((sender_phone, "clause6"))
+        if not clause6:
+            clause6 = await asyncio.to_thread(generate_plan_explain, a1, a2, a3)
+            _gen_cache[(sender_phone, "clause6")] = clause6
+        fill6 = PITCH_6_TEMPLATE.replace("{AI_EXPLAIN}", clause6)
+        await _auto_gap(msg4)
         await csend(msg4)
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_5)
         await csend(PITCH_5)
-        await asyncio.sleep(10)
-        await csend(PITCH_6_TEMPLATE.replace("{AI_EXPLAIN}", clause6))
-        await asyncio.sleep(10)
+        await _auto_gap(fill6)
+        await csend(fill6)
+        await _auto_gap(PITCH_7)
         await csend(PITCH_7)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 8 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 8:
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_8)
         await csend(PITCH_8)
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_9)
         await csend(PITCH_9)
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_10)
         await csend(PITCH_10)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 9 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 9:
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_11)
         await csend(PITCH_11)
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_13)
         await csend(PITCH_13)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 10 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 10:
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_15)
         await csend(PITCH_15)
-        await asyncio.sleep(10)
+        await _auto_gap(PITCH_16)
         await csend(PITCH_16)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 11 WHERE user_phone = ?", (sender_phone,))
@@ -746,5 +801,5 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage >= 11:
         # Payment stage: never go silent again. They agreed/confirmed —
         # ask for the payment screenshot to close the loop.
-        await asyncio.sleep(10)
-        await csend(MSG_CONFIRM_PAYMENT)
+        await _auto_gap(MSG_CONFIRM_PAYMENT)
+        await csend(MSG_CONFIRM_PAYMENT, dedupe=False)
