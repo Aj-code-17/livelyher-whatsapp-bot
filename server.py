@@ -78,6 +78,48 @@ def _clean(text: str) -> str:
     return t.strip()
 
 
+# ------------------------------------------------------------ livelyher knowledge base
+FAQ_KNOWLEDGE_BASE = """
+1. The Intake Process & Getting Started
+Q: How does the process work? Do I pay first?
+A: No, you don't have to pay first. We start by collecting your details and conducting a personalized analysis. Once we present the analysis and you feel completely satisfied with our approach, you can then choose to purchase your customized plan.
+Q: What information do you need from me to create the plan?
+A: During the initial consultation, we collect essential details such as your current weight, height, age, medical history, and daily routine. Depending on your specific health condition or goals, we may ask a few additional questions to ensure the plan is perfectly tailored to you.
+2. Pricing & Payment Methods
+Q: Is this a monthly subscription?
+A: No. The LivelyHer diet plan is a one-time purchase. There are no hidden fees or recurring monthly charges.
+Q: How can I pay for my plan?
+A: Payment depends on the delivery method you choose:
+Digital Plans: Payment is made upfront via JazzCash, EasyPaisa, or direct Bank Transfer.
+Printed Plans: We offer Cash on Delivery (COD) for physical printed manuals.
+3. Delivery Times & Formats
+Q: How long does it take to get my plan?
+A: We offer two delivery options:
+Digital Plan: Delivered to you within 24 hours of purchase.
+Printed Plan: Delivered to your physical address within 5 to 7 working days.
+Q: What will the plan look like?
+A: You will receive a clean, easy-to-read visual manual. It is designed with clear text and sleek outline icons to guide you step-by-step, without any visual clutter or character illustrations.
+4. Customization & Food Types
+Q: Do you cater to medical conditions like PCOS or specific diets like vegetarian/vegan?
+A: Yes, absolutely. Every plan is customized to your exact condition and dietary preferences based on the detailed information you provide during intake.
+Q: Will I need to buy expensive groceries or supplements?
+A: Not at all. Your meals are built around accessible, everyday home-cooked foods like daal, tawa-cooked chicken, and shami kebabs. We focus on portion control and balanced nutrition using what you already have at home.
+5. Results & Guarantees
+Q: How much weight am I guaranteed to lose in 4 weeks?
+A: We do not guarantee a specific number on the scale because everybody reacts differently. However, we never leave you in the dark. If you follow the plan and do not see results, we will create a brand new, adjusted plan for you entirely for free.
+Q: Do I have to work out to see results?
+A: The primary focus is on nutrition, but we highly recommend adding a simple 15-minute daily walk to your routine to accelerate progress and support overall wellness. Heavy gym sessions are not required.
+6. Support & Extensions
+Q: What kind of support do I get after buying the plan?
+A: Your purchase includes 4 weeks of dedicated WhatsApp support starting the day you receive your manual. You can message us anytime if you need help with meal swaps, motivation, or guidance.
+Q: What happens when my 4 weeks of WhatsApp support ends?
+A: You can extend your WhatsApp support completely for free! All you have to do is share a review of your LivelyHer experience with us, and we will extend your support period.
+7. Company, Team & Location
+Q: Where is LivelyHer located? A: Our main operations are based in Gujrat, but we function primarily as a virtual team, allowing us to seamlessly serve clients online without geographic limitations.
+Q: Who creates the plans and provides the support? A: LivelyHer is backed by a dedicated professional network of multiple dieticians and psychologists. This multidisciplinary team ensures your plan is both nutritionally optimized and supportive of your mental well-being.
+Q: Do I need to visit a clinic or office in person? A: No in-person visits are required. Because we operate virtually, your entire journey—from the initial consultation to your 4 weeks of WhatsApp support—is handled completely online for maximum convenience.
+"""
+
 # ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
 MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah!"
@@ -112,7 +154,7 @@ STAGE_OPTED_OUT_HARD = 51   # final line sent; stay respectfully silent unless s
 
 # ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
 PITCH_1 = "Asslamualikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
-PITCH_3 = "are you getting my point?"                                                                     # Message 3
+PITCH_3 = "are you getting my point?"                                                                      # Message 3
 PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona bohat zaroori hota hai...."  # Message 5
 PITCH_6_TEMPLATE = "So, for that, I will make a few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also follow the mood plan because it will help you a lot with mood and energy"  # Message 6
 PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy to follow and also, we will always be available to you whenever you need any help.."  # Message 7
@@ -484,10 +526,13 @@ Recent conversation:
 {history}
 Their latest reply was: "{user_message}"
 
+FAQ KNOWLEDGE BASE FOR ANSWERING QUESTIONS:
+{FAQ_KNOWLEDGE_BASE}
+
 Task:
 1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
 2. If NO and the message is a PAUSE or DELAY message ("wait", "one minute", "brb", "I will be back", "busy right now", "ruko", "baad mein batati hoon"): is_valid = false, and reply_if_invalid is ONLY a short warm acknowledgment such as "Sure Ma'am, take your time. I am right here whenever you are ready." Do NOT repeat the questions, do NOT scold, and do NOT say you can only help with inquiries.
-3. If NO and they are asking a valid question about livelyher: answer it directly in 1 or 2 short specific sentences. Nothing else. Then politely ask them to answer the original questions.
+3. If NO and they are asking a valid question about livelyher: answer it directly in 1 or 2 short specific sentences based on the FAQ KNOWLEDGE BASE. Nothing else. Then politely ask them to answer the original questions.
 4. If NO and the message is a REFUSAL or OPT-OUT (she declines, is not interested, does not want to proceed/continue/order, says stop, or asks to be left alone — for example "no I don't wanna proceed", "not interested", "I don't want to order", "please stop"): is_valid = false, refusal = true, reply_if_invalid = null. The system sends a fixed graceful goodbye, so write nothing.
 5. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
 
@@ -520,6 +565,9 @@ def evaluate_intent(user_msg: str, user_phone: str) -> dict:
 The user is in a consultation funnel. Here is the recent conversation for context:
 {history}
 
+FAQ KNOWLEDGE BASE FOR ANSWERING QUESTIONS:
+{FAQ_KNOWLEDGE_BASE}
+
 User just said: "{user_msg}"
 
 Classify the user's LATEST message, following these rules strictly:
@@ -531,7 +579,7 @@ RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not int
 
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
-   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
+   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences based on the FAQ KNOWLEDGE BASE. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
    - For HESITATION or DELAY: one short warm sentence telling her there is no rush and she can continue whenever she is ready. Nothing else.
    - Never use empty empathy phrases. Answer to the point.
 
