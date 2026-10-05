@@ -2,11 +2,11 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v10) is unchanged: official master-script messages, full
-FAQ knowledge base, AI-composed stage-1 bridge, opt-out parking + resume,
+Everything else (v11) is unchanged: pure-ack fast path (no more "take your
+time" loops), 3s price-scarcity pair, repetition-aware holds, official
+master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
 typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
-intent, pause handling, pacing tiers (4s/7s/12s), audio/voice-note reply,
-no-cliche short answers, you/your addressing, state resume from disk.
+intent, pause handling, pacing tiers, audio-note reply, disk persistence.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -337,6 +337,7 @@ class _BurstAborted(Exception):
 INTAKE_GAP = float(os.getenv("INTAKE_GAP", "4"))
 SHORT_GAP = float(os.getenv("SHORT_GAP", "7"))
 BIG_GAP = float(os.getenv("BIG_GAP", "12"))
+PAIR_GAP = float(os.getenv("PAIR_GAP", "3"))   # gap between tightly-linked pairs (price -> scarcity)
 BIG_MESSAGE_MIN = 200  # chars; messages this long or longer count as "big"
 
 
@@ -668,8 +669,11 @@ RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not int
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
    - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
-   - For HESITATION or DELAY: one short warm sentence telling her there is no rush and she can continue whenever she is ready. Nothing else.
-   - Never use empty empathy phrases. Answer to the point.
+   - For HESITATION or DELAY: write one short warm sentence with zero pressure, and steer the conversation back into the process. CHECK THE HISTORY first:
+     * If this is her FIRST time hesitating at this step, simply comfort her, in fresh wording.
+     * If you already comforted her about waiting recently, do NOT just say "take your time" again. Comfort briefly AND gently invite her back into the CURRENT step you were on, referencing the last open point (for example: "your detailed analysis is already done Ma'am, shall I continue from there?", or "shall I send you the questions so we can start your plan today?", or "the 51 percent discount closes today Ma'am, want me to hold your spot?").
+     Every hesitation reply must quietly guide her back to the next step while staying warm and respectful.
+   - Never use empty empathy phrases. Answer to the point. Never send the same sentence twice: read the history and keep your wording fresh every single time.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -698,6 +702,25 @@ def _intent_or_hold(user_msg: str, user_phone: str) -> dict:
     except Exception:
         log.exception("Intent check crashed — holding the stage politely")
         return {"is_valid": False, "reply": None}
+
+
+# Pure, unambiguous acknowledgments must never be re-judged by the LLM:
+# "ok" means ok. (Anything longer — "ok but...", questions, delays — still
+# goes through evaluate_intent for the nuance.)
+_ACK_WORDS = {
+    "ok", "okay", "oki", "okie", "okk", "okayyy", "okay mam", "okay ma'am",
+    "ok mam", "ok ma'am", "ji", "jee", "yes", "yess", "yes please", "yes mam",
+    "yes ma'am", "haan", "han", "sure", "theek", "theek hai", "theek hy",
+    "acha", "achaa", "acha ji", "acha jee", "go ahead", "send it", "send",
+    "i am here", "im here", "i'm here", "ready", "i am ready", "watched",
+    "watched it", "seen", "seen it", "dekh li", "done", "yes done",
+}
+
+
+def _is_pure_ack(message_text: str) -> bool:
+    t = re.sub(r"[^a-zA-Z' ]", " ", message_text.lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    return t in _ACK_WORDS
 
 
 def generate_medical_pitch(a1, a2, a3) -> str:
@@ -864,9 +887,16 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         stage = resume
 
     # Smart Intent Checker (stage 6+): hesitation/objections/questions no
-    # longer advance the funnel — only clear agreement does.
+    # longer advance the funnel — only clear agreement does. A pure "ok" IS
+    # clear agreement: skip the LLM for it entirely (it used to get
+    # misjudged as hesitation, producing endless "take your time" loops).
     if stage >= 6:
-        intent = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
+        if _is_pure_ack(message_text):
+            intent = {"is_valid": True, "reply": None, "stop": False}
+            log.info("--> [ACK] %s sent a pure acknowledgment — advancing, no AI needed",
+                     sender_phone)
+        else:
+            intent = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
         if intent.get("stop"):
             log.info("--> [OPT-OUT] %s declined at stage %s — graceful goodbye, parked",
                      sender_phone, stage)
@@ -1027,7 +1057,7 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage == 9:
         await _auto_gap(PITCH_11)
         await csend(PITCH_11)
-        await _auto_gap(PITCH_13)
+        await asyncio.sleep(PAIR_GAP)   # 3s: price and scarcity land as one thought
         await csend(PITCH_13)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 10 WHERE user_phone = ?", (sender_phone,))
