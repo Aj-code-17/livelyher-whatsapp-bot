@@ -2,11 +2,13 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v11) is unchanged: pure-ack fast path (no more "take your
-time" loops), 3s price-scarcity pair, repetition-aware holds, official
-master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
-typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
-intent, pause handling, pacing tiers, audio-note reply, disk persistence.
+Everything else is v13-identical: updated intake wording, Message 12 with
+24-hr delivery + printed-plan sentence, 5s/3s pacing around the review video,
+sliding debounce with stall cap, pure-ack fast path, 3s price-scarcity pair,
+repetition-aware holds with steer-back, official master-script messages,
+full FAQ base, AI stage-1 bridge, opt-out parking, typing indicator,
+resume-not-repeat bursts, barge-in abort, reply-lag intent, pause handling,
+pacing tiers, audio-note reply, disk persistence.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -52,8 +54,14 @@ DB_PATH = os.getenv("DB_PATH", "conversations.db")
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 ANALYSIS_DELAY_MINUTES = float(os.getenv("ANALYSIS_DELAY_MINUTES", "30"))
-DEBOUNCE_MIN = float(os.getenv("DEBOUNCE_MIN_SECONDS", "15"))
-DEBOUNCE_MAX = float(os.getenv("DEBOUNCE_MAX_SECONDS", "20"))
+# Sliding quiet-window debounce (the closest thing to typing-detection the
+# WhatsApp API allows — Meta never sends "user is typing" events to bots):
+# every new message RE-ARMS the clock, so we only answer after she has been
+# quiet for DEBOUNCE_QUIET seconds. If she types non-stop for
+# DEBOUNCE_STALL_MAX seconds, we answer what we have so she can't stall us.
+DEBOUNCE_QUIET = float(os.getenv("DEBOUNCE_QUIET_SECONDS", "18"))
+DEBOUNCE_STALL_MAX = float(os.getenv("DEBOUNCE_STALL_MAX_SECONDS", "90"))
+DEBOUNCE_POLL = float(os.getenv("DEBOUNCE_POLL_SECONDS", "0.5"))
 
 _groq_client = None
 
@@ -81,7 +89,7 @@ def _clean(text: str) -> str:
 
 # ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
-MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah! And Ma'am please reply in text not voice messages…"
+MSG_2 = "great I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah! And Ma'am please reply in text not voice messages…"
 SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) kitna hai, aur aapki Height kya hai?\n2. Ye weight gain kab shuru hua, shaadi ke baad, pregnancy/delivery ke baad, ya pichle 1–2 saalon mein achanak barha?\n3. Body mein stubborn weight sabse zyada kahan mehsoos hota hai — lower belly/stomach fat, hips/thighs, ya overall heavy bloating?"
 SET_2 = "4. Pehle weight loss ke liye kya try kiya hai, crash diet, green teas, meal skipping, ya intermittent fasting and usei faida kyun hua?\n5. Aapki daily eating routine kaisi rehti hai, exactly what you usually eat in breakfast, lunch, dinner and snacking? iska answer thora detail mei dijye ga also tell the timing when you eat\n6. Kya koi hormonal blocker ya issue hai jiski wajah se weight drop nahi hota (jaise PCOS, Thyroid, ya irregular cycles)?"
 SET_3 = "For Understanding your Mood and Stress Level:\n1. 1 se 10 ke scale par aap apna daily anxiety aur mental stress kis number par rank karengi (jahan 1 ka matlab bilkul calm aur 10 ka matlab extreme overthinking ya bechaini ho)?\n2. Aapki sleep routine kaisi rehti hai, kya raat ko sote waqt mind switch off nahi hota ya neend toot-toot kar aati hai, aur subah uthne par energy bilkul low hoti hai?\n3. Aapko stress ya anxiety feel hoti hai? Ya aise lage kei jin cheezun ki pehlay enjoy krte that wo ab achi nai lagtin? Ya choti choti baat per gussa ya irritability hoti hoo?"
@@ -139,7 +147,7 @@ PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve the
 PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version…"  # Message 8: wait for response before next
 PITCH_9 = "https://your-video-link-here.com/video.mp4"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
 PITCH_10 = "let me know once you have seen it, I will share more details than .."        # Message 11: wait for reply
-PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah😊"  # Message 12: keep as it is
+PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah. We will create it in 24 hrs and send to you on here but if you want printed delivered to your home, we can also do that with printing and delivery charges added😊"  # Message 12: keep as it is
 PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
 PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
 PITCH_16 = ("I will send you the questions from the number 03700402752. It's for our close "
@@ -321,10 +329,11 @@ def verify_webhook(request: Request) -> Response:
     return Response(status_code=403)
 
 
-# ------------------------------------------------- 15-20s debounce machinery
+# ------------------------------------------------- sliding debounce machinery
 _buffers: dict[str, list[tuple[str, str]]] = {}  # (message_id, text) per lead
 _workers: dict[str, asyncio.Task] = {}
 _interrupted: set[str] = set()  # leads who spoke while we were mid-reply
+_windows: dict[str, tuple[float, float]] = {}  # phone -> (first_at, latest_at) monotonic
 
 
 class _BurstAborted(Exception):
@@ -338,6 +347,8 @@ INTAKE_GAP = float(os.getenv("INTAKE_GAP", "4"))
 SHORT_GAP = float(os.getenv("SHORT_GAP", "7"))
 BIG_GAP = float(os.getenv("BIG_GAP", "12"))
 PAIR_GAP = float(os.getenv("PAIR_GAP", "3"))   # gap between tightly-linked pairs (price -> scarcity)
+VIDEO_PRE_GAP = float(os.getenv("VIDEO_PRE_GAP", "5"))     # after Message 8, before the review video
+VIDEO_POST_GAP = float(os.getenv("VIDEO_POST_GAP", "3"))   # after the review video, before Message 11
 BIG_MESSAGE_MIN = 200  # chars; messages this long or longer count as "big"
 
 
@@ -371,7 +382,13 @@ def _enqueue(sender_phone: str, bot_phone_id: str, message_id: str, message_text
     if _seen_or_mark(message_id):
         log.info("Duplicate delivery of %s — skipping", message_id)
         return
-    _buffers.setdefault(sender_phone, []).append((message_id, message_text))
+    buf = _buffers.setdefault(sender_phone, [])
+    now = time.monotonic()
+    if not buf:
+        _windows[sender_phone] = (now, now)      # fresh turn window
+    else:
+        _windows[sender_phone] = (_windows[sender_phone][0], now)  # RE-ARM the clock
+    buf.append((message_id, message_text))
     if message_text.strip():
         _interrupted.add(sender_phone)  # fresh input: abort any in-flight burst ASAP
     worker = _workers.get(sender_phone)
@@ -382,14 +399,28 @@ def _enqueue(sender_phone: str, bot_phone_id: str, message_id: str, message_text
 
 
 async def _conversation_worker(sender_phone: str, bot_phone_id: str) -> None:
-    """One worker per lead: waits 15-20s of silence, then processes everything
-    that arrived — combined — in a single pass, so no double replies."""
+    """Sliding debounce per lead: every message she sends re-arms the quiet
+    clock — we only process her turn after DEBOUNCE_QUIET seconds of silence
+    (the API-safe equivalent of "wait while she's typing"), combining
+    everything into ONE reply so there are never double replies. If she types
+    non-stop for DEBOUNCE_STALL_MAX seconds, we answer what we have anyway."""
     try:
         while True:
-            await asyncio.sleep(random.uniform(DEBOUNCE_MIN, DEBOUNCE_MAX))
-            items = _buffers.pop(sender_phone, [])
-            if not items:
+            await asyncio.sleep(DEBOUNCE_POLL)
+            buf = _buffers.get(sender_phone)
+            if not buf:
                 break
+            now = time.monotonic()
+            first_at, latest_at = _windows.get(sender_phone, (now, now))
+            quiet_for = now - latest_at
+            waiting_for = now - first_at
+            if quiet_for < DEBOUNCE_QUIET and waiting_for < DEBOUNCE_STALL_MAX:
+                continue  # she re-armed the clock — she's still typing, keep waiting
+            items = _buffers.pop(sender_phone, [])
+            _windows.pop(sender_phone, None)
+            if quiet_for < DEBOUNCE_QUIET:
+                log.info("--> [STALL-CAP] %s typed non-stop for %.0fs — answering now",
+                         sender_phone, DEBOUNCE_STALL_MAX)
             combined = "\n".join(t for _mid, t in items if t).strip()
             if not combined:
                 break
@@ -412,6 +443,7 @@ async def _conversation_worker(sender_phone: str, bot_phone_id: str) -> None:
         log.exception("Conversation worker crashed for %s", sender_phone)
     finally:
         _workers.pop(sender_phone, None)
+        _windows.pop(sender_phone, None)
 
 
 @app.post("/webhook", response_model=None)
@@ -1047,9 +1079,9 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     elif stage == 8:
         await _auto_gap(PITCH_8)
         await csend(PITCH_8)
-        await _auto_gap(PITCH_9)
+        await asyncio.sleep(VIDEO_PRE_GAP)    # doc: video appears after 5 seconds
         await csend(PITCH_9)
-        await _auto_gap(PITCH_10)
+        await asyncio.sleep(VIDEO_POST_GAP)   # doc: Message 11 appears 3 seconds after the video
         await csend(PITCH_10)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 9 WHERE user_phone = ?", (sender_phone,))
