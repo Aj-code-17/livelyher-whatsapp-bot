@@ -2,11 +2,11 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else (v8) is unchanged: FAQ-grounded opening analysis at the
-greeting/intake stages, opt-out parking + resume, typing indicator,
-resume-not-repeat bursts, barge-in abort, reply-lag intent, pause handling,
-pacing tiers (4s/7s/12s), no-cliche short answers, you/your addressing,
-non-text acks, state resume from disk.
+Everything else (v10) is unchanged: official master-script messages, full
+FAQ knowledge base, AI-composed stage-1 bridge, opt-out parking + resume,
+typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
+intent, pause handling, pacing tiers (4s/7s/12s), audio/voice-note reply,
+no-cliche short answers, you/your addressing, state resume from disk.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -56,21 +56,6 @@ DEBOUNCE_MIN = float(os.getenv("DEBOUNCE_MIN_SECONDS", "15"))
 DEBOUNCE_MAX = float(os.getenv("DEBOUNCE_MAX_SECONDS", "20"))
 
 _groq_client = None
-import urllib.request
-
-# Add this to your Render Environment Variables (e.g., https://livelyher.onrender.com)
-PUBLIC_URL = os.getenv("PUBLIC_URL", "")
-
-def keep_alive_ping():
-    """Pings its own public URL every 14 minutes to prevent Render from sleeping."""
-    if not PUBLIC_URL:
-        return
-    try:
-        ping_url = PUBLIC_URL.rstrip("/") + "/ping"
-        urllib.request.urlopen(ping_url, timeout=10)
-        log.info("Self-ping successful! 🟢 Bot is awake.")
-    except Exception as e:
-        log.warning("Self-ping failed: %s", e)
 
 
 def groq() -> Groq:
@@ -96,7 +81,7 @@ def _clean(text: str) -> str:
 
 # ------------------------------------------------------------ conversation templates
 MSG_1 = "Asslamualikum! it's Ani from livelyher, how are you Ma'am?"
-MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah! And Ma’am please reply in text not voice messages…"
+MSG_2 = "Great, I will ask you some basic questions, then we will analyse your situation and reach out to you in 30 minutes where we will explain your situation in detail and how we will help you fix it, Inshallah! And Ma'am please reply in text not voice messages…"
 SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) kitna hai, aur aapki Height kya hai?\n2. Ye weight gain kab shuru hua, shaadi ke baad, pregnancy/delivery ke baad, ya pichle 1–2 saalon mein achanak barha?\n3. Body mein stubborn weight sabse zyada kahan mehsoos hota hai — lower belly/stomach fat, hips/thighs, ya overall heavy bloating?"
 SET_2 = "4. Pehle weight loss ke liye kya try kiya hai, crash diet, green teas, meal skipping, ya intermittent fasting and usei faida kyun hua?\n5. Aapki daily eating routine kaisi rehti hai, exactly what you usually eat in breakfast, lunch, dinner and snacking? iska answer thora detail mei dijye ga also tell the timing when you eat\n6. Kya koi hormonal blocker ya issue hai jiski wajah se weight drop nahi hota (jaise PCOS, Thyroid, ya irregular cycles)?"
 SET_3 = "For Understanding your Mood and Stress Level:\n1. 1 se 10 ke scale par aap apna daily anxiety aur mental stress kis number par rank karengi (jahan 1 ka matlab bilkul calm aur 10 ka matlab extreme overthinking ya bechaini ho)?\n2. Aapki sleep routine kaisi rehti hai, kya raat ko sote waqt mind switch off nahi hota ya neend toot-toot kar aati hai, aur subah uthne par energy bilkul low hoti hai?\n3. Aapko stress ya anxiety feel hoti hai? Ya aise lage kei jin cheezun ki pehlay enjoy krte that wo ab achi nai lagtin? Ya choti choti baat per gussa ya irritability hoti hoo?"
@@ -113,7 +98,9 @@ MSG_CONFIRM_PAYMENT = ("Perfect Ma'am! 🎉 Once you have made the payment, just
                        "Insha'Allah.")
 MSG_SCREENSHOT = ("JazakAllah Ma'am! 🌸 We have received your screenshot. Our team is "
                   "verifying the payment and will Insha'Allah confirm your spot shortly.")
-MSG_TYPE_ONLY = "Ma’am I can’t listen to audio messages kindly reply in text messages"
+MSG_TYPE_ONLY = ("Sorry Ma'am, I can understand text messages only. Kindly type your "
+                 "reply here and I will help you right away 😊")
+MSG_AUDIO = "Ma'am I can't listen to audio messages, kindly reply in text messages 😊"
 
 # Opt-out flow: she said no / stop / not interested — acknowledge ONCE, park
 # her, never re-ask. If she ever returns, resume from resume_stage.
@@ -127,32 +114,38 @@ STAGE_OPTED_OUT = 50        # goodbye sent; one final soft line allowed
 STAGE_OPTED_OUT_HARD = 51   # final line sent; stay respectfully silent unless she re-engages
 
 # ---------------- FAQ KNOWLEDGE BASE (EDIT THIS WITH YOUR REAL INFO)
-# The AI answers her questions ONLY from these facts, so keep it accurate and
-# short. Used by: opening analysis (hi/hello stage), intake validator, and
-# the funnel intent checker.
+# The AI answers her questions ONLY from these facts, so keep it accurate.
+# Used by: opening analysis (hi/hello stage), stage-1 bridge, intake
+# validator, and the funnel intent checker.
 FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching program for women.
-- What it is: a personalized 6 week plan with simple diet changes, vitamins and a special tea, plus a mood and stress support plan.
-- Location: fully online. Consultation, free analysis and plans are delivered on WhatsApp, so clients can join from anywhere in Pakistan or abroad.
-- Price: original 3000 PKR, currently 51 percent off at 1470 PKR, which includes 4 weeks of coach support for any changes.
-- Printed plan price: 1950 PKR plus 200 delivery charges. Both digital and printed plans are the same in content, it's just the difference of digital and printed formats.
-- Payment policy: We prefer advance payment, but if the customer is having some problem making payment, they can pay after receiving the plan as well.
-- After the free analysis, the personalized plan is delivered within 24 hours once the final diet preference questions are answered.
-- Coaches stay available for adjustments during the whole journey.
-- If asked something not covered here (exact office address, medical guarantees, doctor details, physical product delivery), say politely that the team will confirm it after the free analysis. Do not invent facts."""
+- Process: no payment first. Her details are collected and a FREE personalized analysis is done and explained. Only once she is fully satisfied does she choose to buy her personalized plan.
+- Intake details collected: current weight, target weight, height, eating routine, stress and sleep, any hormonal issues; a few extra diet preference questions may be asked for the final plan.
+- Pricing: one-time purchase, NO monthly subscription, no hidden charges. Digital plan: 1470 PKR (51 percent off the original 3000). Printed plan: 1950 PKR plus 200 delivery charges, and the content is exactly the same as the digital plan, only the format differs.
+- Payment: advance payment is preferred. Digital plans are paid via JazzCash, EasyPaisa, or direct bank transfer. Printed plans offer Cash on Delivery (COD). If she has a genuine problem paying in advance, she can pay after receiving the plan as well.
+- Delivery: digital plan within 24 hours of purchase. Printed plan to the physical address within 5 to 7 working days. The plan is a clean, easy-to-read visual manual with clear text and simple icons.
+- Customization: fully customized to her condition and food preferences (PCOS, thyroid, vegetarian, anything). Meals use everyday affordable home foods like daal, tawa cooked chicken and shami kebabs with portion control, nothing fancy to buy.
+- Results: no fixed number is guaranteed because every body reacts differently, but if she follows the plan and still sees no results, a brand new adjusted plan is made for her entirely free. Heavy gym is not required; a simple 15 minute daily walk is recommended.
+- Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
+- Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
+- Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
+- If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
 
-# ---------------- DOCX PITCH TEMPLATE (Messages 1..17 as provided)
-PITCH_1 = "Asslamualaikum... we are done with the analysis, let me know when you are there Ma'am?"          # Message 1
-PITCH_3 = "are you getting my point?"                                                                      # Message 3
-PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety ko bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona wese hi bohat zaroori hai"  # Message 5
-PITCH_6_TEMPLATE = "For that, I will make just few changes in your diet and recommend few vitamins and a tea, {AI_EXPLAIN} and also, we will create a mood plan for you, Insha’Allah, it will help you a lot with mood and energy"  # Message 6
-PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy for you to follow and also, we will always be available to you whenever you need any help😇"  # Message 7
-PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version…"  # Message 8
+# ---------------- OFFICIAL SCRIPT (Solution Explain, Messages 1..16)
+PITCH_1 = "Asslamualaikum... we are done with the analysis, let me know when you are there Ma'am?"  # Message 1: as it is, wait for reply
+PITCH_3 = "are you getting my point?"                                                              # Message 3: as it is, wait for reply
+PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight in coming 6 weeks aur specially stress aur anxiety ko bilkul khatam krna hai because uskei bagair weight loss mushkil hota aur specially for women mood fresh aur lively hona wese hi bohat zaroori hai"  # Message 5: KEEP as it is
+PITCH_6_TEMPLATE = "For that, I will make just few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also, we will create a mood plan for you, Insha'Allah, it will help you a lot with mood and energy"  # Message 6: structure kept, AI fills the explain slot
+PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy for you to follow and also, we will always be available to you whenever you need any help😇"  # Message 7: KEEP as it is
+PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version…"  # Message 8: wait for response before next
 PITCH_9 = "https://your-video-link-here.com/video.mp4"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
-PITCH_10 = "let me know once you have seen it, I will share more details than .."                          # Message 11
-PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah😊"  # Message 12
-PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye g….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13
-PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14
-PITCH_16 = "I will send you questions from the number 03700402752, it’s for our close customers and also for any questions, you have to contact on this number😊\n\nFor payment you can use following accounts:\n\nBank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher"  # Message 15 & Payment
+PITCH_10 = "let me know once you have seen it, I will share more details than .."        # Message 11: wait for reply
+PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah😊"  # Message 12: keep as it is
+PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
+PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
+PITCH_16 = ("I will send you the questions from the number 03700402752. It's for our close "
+            "customers and also for any questions, you have to contact on this number 😊\n\n"
+            "For payment you can use following accounts:\n\n"
+            "Bank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher")  # Message 15  <--- ADD CONTACT NUMBER + BANK DETAILS HERE
 
 
 # ------------------------------------------------------------ database
@@ -287,11 +280,10 @@ def _start_background() -> None:
     if _scheduler is None:
         _scheduler = BackgroundScheduler()
         _scheduler.add_job(check_scheduled_analyses, "interval", seconds=60)
-        _scheduler.add_job(keep_alive_ping, "interval", minutes=14)  # <--- ADDED THIS LINE
         _scheduler.start()
         # WAKE-UP SWEEP: on every boot, immediately check for overdue analyses
+        # (covers server sleep, restarts, deploys, crashes).
         _scheduler.add_job(check_scheduled_analyses)
-    
     with _db() as conn:
         leads = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         rows = conn.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0]
@@ -485,7 +477,12 @@ async def _ack_nontext(sender_phone: str, bot_phone_id: str, mtype: str) -> None
                                (sender_phone,)).fetchone()
         stage = row[0] if row else 0
         await asyncio.sleep(SHORT_GAP)
-        text = MSG_SCREENSHOT if (mtype == "image" and stage >= 10) else MSG_TYPE_ONLY
+        if mtype == "image" and stage >= 10:
+            text = MSG_SCREENSHOT                        # payment proof receipt
+        elif mtype in ("audio", "voice", "ptt"):
+            text = MSG_AUDIO                             # "I can't listen to audio, text please"
+        else:
+            text = MSG_TYPE_ONLY                         # anything else -> steer to text
         await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
         add_history(sender_phone, "bot", text)
         log.info("[WA] -> %s: (non-text ack) %.60s", sender_phone, text)
@@ -555,6 +552,59 @@ def _safe_opening(user_msg: str, user_phone: str) -> dict:
         return {}
 
 
+def compose_stage1_bridge(user_msg: str, user_phone: str) -> dict:
+    """The AI drives the transition into intake: it READS her reply, reacts to
+    it naturally, answers any question from the FAQ knowledge base, and then
+    invites her into the questions — replacing the blind MSG_2 template dump."""
+    history = _history_block(user_phone)
+    prompt = f"""{_FEMALE}
+TASK: STAGE 1 BRIDGE
+Context: you just greeted a new lead on WhatsApp (she received your Salam and intro).
+Recent conversation:
+{history}
+
+FAQ KNOWLEDGE BASE FOR ANSWERING QUESTIONS (answer ONLY from this, never invent facts):
+{FAQ_KNOWLEDGE_BASE}
+
+She replied: "{user_msg}"
+
+Compose your next message to her. 2 to 4 short sentences, under 55 words, in this natural order:
+1. REACT to what she actually said (if she says she is fine, be glad; if she asked a question or asked where you are located, ANSWER it directly in 1 or 2 sentences using only the FAQ KNOWLEDGE BASE).
+2. INVITE her warmly into a few quick questions and tell her what happens next: coaches will do a FREE detailed analysis of her situation and reach out in about 30 minutes; only once she is satisfied can she buy a personalized plan, delivered within 24 hours.
+3. END with one short polite request to please reply in text messages, not voice messages.
+
+Also classify:
+- refusal: true ONLY if she clearly declines or wants no contact. Otherwise false.
+- pause: true ONLY if she asked you to wait or said she is busy. Otherwise false.
+
+CONSTRAINTS:
+- {_ENGLISH}
+- NEVER USE MARKDOWN and never use any hyphen or dash character. Plain text only.
+- {_NO_CLICHES}
+- Speak to her as "you"/"Ma'am", warm and human, no hype, and never open with a bare "Great,".
+
+Return ONLY pure JSON in this format:
+{{"text": "your bridge message", "refusal": true/false, "pause": true/false}}"""
+
+    response = groq().chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+    )
+    result = json.loads(response.choices[0].message.content)
+    if result.get("text"):
+        result["text"] = _clean(result["text"])
+    return result
+
+
+def _safe_bridge1(user_msg: str, user_phone: str) -> dict:
+    try:
+        return compose_stage1_bridge(user_msg, user_phone)
+    except Exception:
+        log.exception("Stage-1 bridge failed — falling back to MSG_2 template")
+        return {"text": MSG_2}
+
+
 def validate_answer(current_questions: str, user_message: str, user_phone: str) -> dict:
     history = _history_block(user_phone)
     prompt = f"""{_FEMALE}
@@ -617,7 +667,7 @@ RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not int
 
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
-   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences based on the FAQ KNOWLEDGE BASE. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
+   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
    - For HESITATION or DELAY: one short warm sentence telling her there is no rush and she can continue whenever she is ready. Nothing else.
    - Never use empty empathy phrases. Answer to the point.
 
@@ -655,7 +705,7 @@ def generate_medical_pitch(a1, a2, a3) -> str:
 The user's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
 Write exactly ONE paragraph in simple English using this exact structure (fill in the brackets based on their data):
-"The situation you explained (mention specific situation causing effect) they suggest you have (their medical conditions or problem like insulin sensitivity or PCOS or obesity whatever they have, make sure it’s what they have) in this (simply scientifically explain what happens in it relating to them) because of which (their pain or problem they told they are suffering)."
+"The situation you explained (mention specific situation causing effect) suggests you have (their medical conditions like insulin sensitivity or pcos or obesity whatever fits them). In this (simply scientifically explain what happens in it relating to them) because of which (their pain or problem they told they are suffering)."
 
 GOAL: educate them about their problem. This is critical: use scientific terms but explain them simply enough that they understand.
 
@@ -681,10 +731,10 @@ def generate_fear_pitch(a1, a2, a3) -> str:
     prompt = f"""{_FEMALE}
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
-Write exactly ONE paragraph in simple English using this exact structure to install a realistic fear element:
-"In long term it can cause (tell what happens if we leave it untreated but make sure its according to their problem and they are only 2 or 3 things max, don’t intimidate them just tell what could possibly be happening if left unsolved)."
+Write exactly ONE paragraph in simple English using this exact structure:
+"In long term it can cause (mention ONLY 2 or 3 realistic things that could happen if this is left untreated, chosen to fit THEIR specific condition — for example reaching 90+ weight, diabetes, losing body shape, or similar)."
 
-GOAL: educate them that what might happen if action is not taken now. Do not make the fear paralyzing: just enough so they know it can lead to a worse and harder to solve problem in future. Only mention 2 or 3 things not more.
+GOAL: educate them about what might happen if action is not taken now, strictly according to THEIR condition. Do NOT intimidate and do NOT make the fear paralyzing: only 2 or 3 possibilities, just enough so they know it can lead to a worse and harder to solve problem in future.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -698,7 +748,7 @@ def generate_plan_explain(a1, a2, a3) -> str:
     prompt = f"""{_FEMALE}
 User's data: Physical: {a1} | Diet: {a2} | Stress: {a3}
 
-In one or two very short simple English sentences, explain how well it will cure their scientific problem and cause weight loss, in few words. Start the sentence continuing naturally after the words "vitamins and a tea," (for example start with a verb like "fix", "reduce", "balance").
+In one or two very short simple English sentences, explain how a few diet changes plus vitamins and a tea will scientifically address their specific problem and cause weight loss within weeks. Start the sentence continuing naturally after the words "this will" (for example start with a verb like "fix", "reduce", "balance").
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -834,9 +884,9 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     # STATE MACHINE ADVANCEMENT (TIERED PACING: 4s intake, 7s short, 12s big)
     if stage == 1:
-        # Listen first: answer her question from the FAQ knowledge base, hold
-        # pauses gently, park opt-outs — THEN invite her into the questions.
-        op = await asyncio.to_thread(_safe_opening, message_text, sender_phone)
+        # The AI drives this transition: it reads her reply, reacts to it,
+        # answers her question, and only THEN invites her into the questions.
+        op = await asyncio.to_thread(_safe_bridge1, message_text, sender_phone)
         if op.get("refusal"):
             log.info("--> [OPT-OUT] %s declined at stage 1", sender_phone)
             await asyncio.sleep(SHORT_GAP)
@@ -849,12 +899,9 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             await asyncio.sleep(INTAKE_GAP)
             await send(MSG_PAUSE)
             return
-        if op.get("answer"):
-            await asyncio.sleep(INTAKE_GAP)
-            await send(op["answer"])
         await asyncio.sleep(INTAKE_GAP)
-        await send(MSG_2)
-        await asyncio.sleep(INTAKE_GAP)
+        await send(op.get("text") or MSG_2)
+        await asyncio.sleep(SHORT_GAP)   # a human beat before the question set
         await send(SET_1)
         with _db() as conn:
             conn.execute("UPDATE users SET chat_stage = 2 WHERE user_phone = ?", (sender_phone,))
