@@ -2,13 +2,14 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else is v13-identical: updated intake wording, Message 12 with
-24-hr delivery + printed-plan sentence, 5s/3s pacing around the review video,
-sliding debounce with stall cap, pure-ack fast path, 3s price-scarcity pair,
-repetition-aware holds with steer-back, official master-script messages,
-full FAQ base, AI stage-1 bridge, opt-out parking, typing indicator,
-resume-not-repeat bursts, barge-in abort, reply-lag intent, pause handling,
-pacing tiers, audio-note reply, disk persistence.
+Everything else is v14-identical: ack-hold silence + anti-repeat backstop
+(no more repeated "take your time" loops), updated intake wording, Message 12
+with 24-hr delivery + printed sentence, 5s/3s video pacing, sliding debounce
+with stall cap, pure-ack fast path, 3s price-scarcity pair, repetition-aware
+holds with steer-back, official master-script messages, full FAQ base,
+AI stage-1 bridge, opt-out parking, typing indicator, resume-not-repeat
+bursts, barge-in abort, reply-lag intent, pause handling, pacing tiers,
+audio-note reply, disk persistence.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -134,7 +135,7 @@ FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching
 - Customization: fully customized to her condition and food preferences (PCOS, thyroid, vegetarian, anything). Meals use everyday affordable home foods like daal, tawa cooked chicken and shami kebabs with portion control, nothing fancy to buy.
 - Results: no fixed number is guaranteed because every body reacts differently, but if she follows the plan and still sees no results, a brand new adjusted plan is made for her entirely free. Heavy gym is not required; a simple 15 minute daily walk is recommended.
 - Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
-- Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
+- Team and location: main operations are based in [ADD CITY], but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
 - Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
 - If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
 
@@ -150,7 +151,7 @@ PITCH_10 = "let me know once you have seen it, I will share more details than ..
 PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah. We will create it in 24 hrs and send to you on here but if you want printed delivered to your home, we can also do that with printing and delivery charges added😊"  # Message 12: keep as it is
 PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
 PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
-PITCH_16 = ("I will send you the questions from the number 03700402752. It's for our close "
+PITCH_16 = ("I will send you the questions from the number [ADD CONTACT NUMBER]. It's for our close "
             "customers and also for any questions, you have to contact on this number 😊\n\n"
             "For payment you can use following accounts:\n\n"
             "Bank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher")  # Message 15  <--- ADD CONTACT NUMBER + BANK DETAILS HERE
@@ -367,6 +368,14 @@ def _already_sent(sender_phone: str, text: str) -> bool:
             "SELECT COUNT(*) FROM chat_history WHERE user_phone = ? AND role = 'bot'"
             " AND content = ?", (sender_phone, text)).fetchone()[0]
     return n > 0
+
+
+def _last_bot_message(sender_phone: str) -> str:
+    """The most recent bot message she received (empty string if none)."""
+    row = _db().execute(
+        "SELECT content FROM chat_history WHERE user_phone = ? AND role = 'bot'"
+        " ORDER BY rowid DESC LIMIT 1", (sender_phone,)).fetchone()
+    return row[0] if row else ""
 
 
 def _seen_or_mark(message_id: str) -> bool:
@@ -941,14 +950,27 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         if not intent.get("is_valid"):
             log.info("--> [HOLD] Objection/question/hesitation — stage %s frozen.", stage)
             await asyncio.sleep(SHORT_GAP)
-            await csend(intent.get("reply") or HESITATION_FALLBACK, dedupe=False)
+            hold = intent.get("reply") or HESITATION_FALLBACK
+            if _last_bot_message(sender_phone) == hold:
+                # Never send her the identical comfort line twice in a row —
+                # being read with silence beats looking like a broken loop.
+                log.info("--> [ANTI-REPEAT] identical hold suppressed for %s — waiting silently",
+                         sender_phone)
+            else:
+                await csend(hold, dedupe=False)
             return
 
     # STATE MACHINE ADVANCEMENT (TIERED PACING: 4s intake, 7s short, 12s big)
     if stage == 1:
         # The AI drives this transition: it reads her reply, reacts to it,
         # answers her question, and only THEN invites her into the questions.
-        op = await asyncio.to_thread(_safe_bridge1, message_text, sender_phone)
+        # A pure ack right after the greeting ("ok", "ok ji") is simply a green
+        # light — go straight to the intake invite, never judge it as pause.
+        if _is_pure_ack(message_text):
+            log.info("--> [ACK] %s green-lit intake from the greeting", sender_phone)
+            op = {"text": None, "refusal": False, "pause": False}
+        else:
+            op = await asyncio.to_thread(_safe_bridge1, message_text, sender_phone)
         if op.get("refusal"):
             log.info("--> [OPT-OUT] %s declined at stage 1", sender_phone)
             await asyncio.sleep(SHORT_GAP)
@@ -959,7 +981,11 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             return
         if op.get("pause"):
             await asyncio.sleep(INTAKE_GAP)
-            await send(MSG_PAUSE)
+            if _last_bot_message(sender_phone) == MSG_PAUSE:
+                log.info("--> [ANTI-REPEAT] pause msg already sent to %s — waiting silently",
+                         sender_phone)
+            else:
+                await send(MSG_PAUSE)
             return
         await asyncio.sleep(INTAKE_GAP)
         await send(op.get("text") or MSG_2)
@@ -969,6 +995,11 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             conn.execute("UPDATE users SET chat_stage = 2 WHERE user_phone = ?", (sender_phone,))
 
     elif stage == 2:
+        if _is_pure_ack(message_text):
+            # Filler ("ok", "ok??") with no answers — say nothing, just wait
+            # for her real reply. Never re-send the same nudge in a loop.
+            log.info("--> [ACK-HOLD] %s sent a filler ack mid-intake — waiting silently", sender_phone)
+            return
         val = await asyncio.to_thread(_validate_or_accept, SET_1, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
         if val.get("refusal"):
@@ -983,9 +1014,17 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
                              (message_text, sender_phone))
             await send(SET_2)
         else:
-            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+            reply = val.get("reply_if_invalid") or INVALID_FALLBACK
+            if _last_bot_message(sender_phone) == reply:
+                log.info("--> [ANTI-REPEAT] identical intake nudge suppressed for %s — silent",
+                         sender_phone)
+            else:
+                await send(reply)
 
     elif stage == 3:
+        if _is_pure_ack(message_text):
+            log.info("--> [ACK-HOLD] %s sent a filler ack mid-intake — waiting silently", sender_phone)
+            return
         val = await asyncio.to_thread(_validate_or_accept, SET_2, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
         if val.get("refusal"):
@@ -1000,9 +1039,17 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
                              (message_text, sender_phone))
             await send(SET_3)
         else:
-            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+            reply = val.get("reply_if_invalid") or INVALID_FALLBACK
+            if _last_bot_message(sender_phone) == reply:
+                log.info("--> [ANTI-REPEAT] identical intake nudge suppressed for %s — silent",
+                         sender_phone)
+            else:
+                await send(reply)
 
     elif stage == 4:
+        if _is_pure_ack(message_text):
+            log.info("--> [ACK-HOLD] %s sent a filler ack mid-intake — waiting silently", sender_phone)
+            return
         val = await asyncio.to_thread(_validate_or_accept, SET_3, message_text, sender_phone)
         await asyncio.sleep(INTAKE_GAP)
         if val.get("refusal"):
@@ -1031,12 +1078,24 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
             log.info("--> [TESTING] 30-min timer bypassed for %s — straight to stage 6",
                      sender_phone)
         else:
-            await send(val.get("reply_if_invalid") or INVALID_FALLBACK)
+            reply = val.get("reply_if_invalid") or INVALID_FALLBACK
+            if _last_bot_message(sender_phone) == reply:
+                log.info("--> [ANTI-REPEAT] identical intake nudge suppressed for %s — silent",
+                         sender_phone)
+            else:
+                await send(reply)
 
     elif stage == 5:
-        # Still inside the 30-minute wait — hold them gently.
+        # Still inside the 30-minute wait — hold them gently, but never as a
+        # broken record: filler acks get silence, and the wait note sends once.
+        if _is_pure_ack(message_text):
+            log.info("--> [ACK-HOLD] %s sent a filler ack during the 30-min wait — silent", sender_phone)
+            return
         await asyncio.sleep(SHORT_GAP)
-        await send(MSG_WAIT)
+        if _last_bot_message(sender_phone) == MSG_WAIT:
+            log.info("--> [ANTI-REPEAT] wait note already sent to %s — silent", sender_phone)
+        else:
+            await send(MSG_WAIT)
 
     elif stage == 6:
         # Lead replied to PITCH_1 ("I am here") -> STORED Message 2 + Message 3
