@@ -2,14 +2,15 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else is v14-identical: ack-hold silence + anti-repeat backstop
-(no more repeated "take your time" loops), updated intake wording, Message 12
-with 24-hr delivery + printed sentence, 5s/3s video pacing, sliding debounce
-with stall cap, pure-ack fast path, 3s price-scarcity pair, repetition-aware
-holds with steer-back, official master-script messages, full FAQ base,
-AI stage-1 bridge, opt-out parking, typing indicator, resume-not-repeat
-bursts, barge-in abort, reply-lag intent, pause handling, pacing tiers,
-audio-note reply, disk persistence.
+Everything else is v15-identical: parked-ack silence (no wrong welcome-backs),
+tightened refusal (stop only on clear declines), intake sanity check for
+impossible/fake numbers, ack-hold silence + anti-repeat, updated intake
+wording, Message 12 with 24-hr delivery + printed sentence, 5s/3s video
+pacing, sliding debounce with stall cap, pure-ack fast path, 3s
+price-scarcity pair, repetition-aware holds with steer-back, official
+master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
+typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
+intent, pause handling, pacing tiers, audio-note reply, disk persistence.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -564,7 +565,7 @@ Her opening message: "{user_msg}"
 
 Decide:
 1. answer: If any part of her message is a QUESTION or a request for information (about livelyher, location, price, the plan, delivery, who we are), write a short, direct, smart 1 or 2 sentence answer based ONLY on the FAQ KNOWLEDGE BASE, speaking to her as "you". If she asked no question, answer is null.
-2. refusal: true only if she clearly declines or wants no contact ("no", "don't message me", "not interested", "stop"). Otherwise false.
+2. refusal: true only if she clearly declines or wants no contact ("no", "don't message me", "not interested", "stop"). Dodging, teasing, protests like "I didn't say anything", or rude but engaged replies are NOT refusal. Otherwise false.
 3. pause: true only if she asks you to wait or says she is busy ("wait", "one minute", "busy"). Otherwise false.
 
 CONSTRAINTS:
@@ -663,8 +664,9 @@ Task:
 1. Did the user actually attempt to answer the questions (one or several messages combined count as one reply)? (It doesn't have to be perfect, just relevant to weight, diet, or stress depending on the question). If YES: is_valid = true.
 2. If NO and the message is a PAUSE or DELAY message ("wait", "one minute", "brb", "I will be back", "busy right now", "ruko", "baad mein batati hoon"): is_valid = false, and reply_if_invalid is ONLY a short warm acknowledgment such as "Sure Ma'am, take your time. I am right here whenever you are ready." Do NOT repeat the questions, do NOT scold, and do NOT say you can only help with inquiries.
 3. If NO and they are asking a valid question about livelyher: answer it directly in 1 or 2 short specific sentences based on the FAQ KNOWLEDGE BASE. Nothing else. Then politely ask them to answer the original questions.
-4. If NO and the message is a REFUSAL or OPT-OUT (she declines, is not interested, does not want to proceed/continue/order, says stop, or asks to be left alone — for example "no I don't wanna proceed", "not interested", "I don't want to order", "please stop"): is_valid = false, refusal = true, reply_if_invalid = null. The system sends a fixed graceful goodbye, so write nothing.
-5. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
+4. If NO and the message is a REFUSAL or OPT-OUT (she clearly declines the program or wants no more contact, for example "no I don't wanna proceed", "not interested", "I don't want to order", "please stop"): is_valid = false, refusal = true, reply_if_invalid = null. The system sends a fixed graceful goodbye, so write nothing. IMPORTANT: refusal = true ONLY for a clear decline or stop request. Dodging the questions, teasing, impossible or made-up answers, "don't ask me", off-topic grumbling, or protests like "I didn't say anything" are NOT refusals — handle those as invalid under the other rules instead.
+5. SANITY CHECK for measurements: if their claimed numbers are clearly impossible or contradict the program (weight far outside roughly 25 to 400 kg, height far outside roughly 3 to 8 feet or 90 to 245 cm, or a TARGET weight that is HIGHER than the current weight — we are a weight LOSS program): is_valid = false, refusal = false, and reply_if_invalid is ONE short smart sentence pointing out the implausible number and asking for the real values so we can help. Do NOT repeat the whole question set and do NOT scold.
+6. If NO and totally off-topic: politely say you can only assist with livelyher inquiries, and repeat the questions.
 
 CONSTRAINTS:
 - {_ENGLISH}
@@ -705,7 +707,7 @@ Classify the user's LATEST message, following these rules strictly:
 RULE A - REPLY LAG: People read and reply late. Her message may be answering an EARLIER bot message, not the most recent one. Look at the conversation history and decide WHICH bot message she is actually responding to. If she is clearly reacting to something older (for example talking about the video, the analysis, or an earlier question) while a NEWER question is still open and she did not answer that newer question, that is NOT fresh agreement: is_valid = false.
 RULE B - MIXED SIGNALS: If a quick "ok / yes / theek hai" is bundled with ANY hesitation, delay, condition, inability, or question ("ok but...", "ok I will watch the video later and then decide", "wait one minute", "I can't right now"), HESITATION WINS: is_valid = false.
 
-RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not interested", "I don't want it", "I don't want to order", "I don't want to continue", "stop messaging me", "leave me alone", "don't contact me again", or any firm angry refusal), set stop = true and is_valid = false. The reply is then ONE short graceful goodbye sentence with zero pressure and zero questions (for example "No problem at all Ma'am, thank you for your time."). Do NOT re-ask anything and do NOT invite her to continue.
+RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not interested", "I don't want it", "I don't want to order", "I don't want to continue", "stop messaging me", "leave me alone", "don't contact me again", or any firm angry refusal), set stop = true and is_valid = false. The reply is then ONE short graceful goodbye sentence with zero pressure and zero questions (for example "No problem at all Ma'am, thank you for your time."). Do NOT re-ask anything and do NOT invite her to continue. Teasing, dodging the questions, fake or impossible answers, protests like "I didn't say anything", or rude but still engaged replies are NEVER stop — handle them under rule 2 instead.
 
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
@@ -905,6 +907,13 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
     # OPT-OUT RESIDENCY: she said stop. Only a clear re-engagement brings her
     # back — resumed exactly where she left off, never re-asked, never restarted.
     if stage in (STAGE_OPTED_OUT, STAGE_OPTED_OUT_HARD):
+        # A bare "ok/okay/ji" after the goodbye is just her acknowledging the
+        # message — it is NOT consent to resume. Unparking on filler was the
+        # welcome-back loop the user reported. Say nothing, stay parked.
+        if _is_pure_ack(message_text):
+            log.info("--> [PARKED-ACK] %s sent filler after goodbye — staying parked, silent",
+                     sender_phone)
+            return
         chk = await asyncio.to_thread(_intent_or_hold, message_text, sender_phone)
         if chk.get("stop"):
             if stage == STAGE_OPTED_OUT:
