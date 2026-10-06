@@ -2,12 +2,12 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else is v15-identical: parked-ack silence (no wrong welcome-backs),
-tightened refusal (stop only on clear declines), intake sanity check for
-impossible/fake numbers, ack-hold silence + anti-repeat, updated intake
-wording, Message 12 with 24-hr delivery + printed sentence, 5s/3s video
-pacing, sliding debounce with stall cap, pure-ack fast path, 3s
-price-scarcity pair, repetition-aware holds with steer-back, official
+Everything else is v16-identical: link previews on (thumbnail cards),
+bare .mp4/media-id ships as native video, parked-ack silence, tightened
+refusal, intake sanity check, ack-hold silence + anti-repeat, updated
+intake wording, Message 12 with 24-hr delivery + printed sentence,
+5s/3s video pacing, sliding debounce with stall cap, pure-ack fast path,
+3s price-scarcity pair, repetition-aware holds with steer-back, official
 master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
 typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
 intent, pause handling, pacing tiers, audio-note reply, disk persistence.
@@ -136,7 +136,7 @@ FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching
 - Customization: fully customized to her condition and food preferences (PCOS, thyroid, vegetarian, anything). Meals use everyday affordable home foods like daal, tawa cooked chicken and shami kebabs with portion control, nothing fancy to buy.
 - Results: no fixed number is guaranteed because every body reacts differently, but if she follows the plan and still sees no results, a brand new adjusted plan is made for her entirely free. Heavy gym is not required; a simple 15 minute daily walk is recommended.
 - Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
-- Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
+- Team and location: main operations are based in [ADD CITY], but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
 - Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
 - If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
 
@@ -152,7 +152,7 @@ PITCH_10 = "let me know once you have seen it, I will share more details than ..
 PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah. We will create it in 24 hrs and send to you on here but if you want printed delivered to your home, we can also do that with printing and delivery charges added😊"  # Message 12: keep as it is
 PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
 PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
-PITCH_16 = ("I will send you the questions from the number 03700402752. It's for our close "
+PITCH_16 = ("I will send you the questions from the number [ADD CONTACT NUMBER]. It's for our close "
             "customers and also for any questions, you have to contact on this number 😊\n\n"
             "For payment you can use following accounts:\n\n"
             "Bank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher")  # Message 15  <--- ADD CONTACT NUMBER + BANK DETAILS HERE
@@ -377,6 +377,16 @@ def _last_bot_message(sender_phone: str) -> str:
         "SELECT content FROM chat_history WHERE user_phone = ? AND role = 'bot'"
         " ORDER BY rowid DESC LIMIT 1", (sender_phone,)).fetchone()
     return row[0] if row else ""
+
+
+def _is_video_payload(text: str) -> bool:
+    """True if the message is ONLY a video file link (https://... .mp4) or a
+    WhatsApp media id ('media:<id>') — those ship as native video messages.
+    A sentence containing a link (like the about video) stays text and gets
+    the link-preview card instead."""
+    t = text.strip().lower()
+    bare_url = t.startswith("http") and " " not in t
+    return (bare_url and t.endswith((".mp4", ".mov", ".webm"))) or t.startswith("media:")
 
 
 def _seen_or_mark(message_id: str) -> bool:
@@ -853,7 +863,15 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
         row = cursor.fetchone()
 
     async def send(text: str):
-        await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
+        # A bare video link (or WhatsApp media id) becomes a NATIVE video
+        # message — inline player with its own real thumbnail and zero link
+        # preview dependency. Everything else is text (links render a preview
+        # card automatically now that preview_url is on).
+        if _is_video_payload(text):
+            await asyncio.to_thread(meta.send_whatsapp_video, bot_phone_id,
+                                    sender_phone, text.strip())
+        else:
+            await asyncio.to_thread(meta.send_whatsapp_text, bot_phone_id, sender_phone, text)
         add_history(sender_phone, "bot", text)
         log.info("[WA] -> %s: %.80s", sender_phone, text)
 
