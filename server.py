@@ -135,7 +135,7 @@ FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching
 - Customization: fully customized to her condition and food preferences (PCOS, thyroid, vegetarian, anything). Meals use everyday affordable home foods like daal, tawa cooked chicken and shami kebabs with portion control, nothing fancy to buy.
 - Results: no fixed number is guaranteed because every body reacts differently, but if she follows the plan and still sees no results, a brand new adjusted plan is made for her entirely free. Heavy gym is not required; a simple 15 minute daily walk is recommended.
 - Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
-- Team and location: main operations are based in [ADD CITY], but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
+- Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
 - Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
 - If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
 
@@ -151,7 +151,7 @@ PITCH_10 = "let me know once you have seen it, I will share more details than ..
 PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah. We will create it in 24 hrs and send to you on here but if you want printed delivered to your home, we can also do that with printing and delivery charges added😊"  # Message 12: keep as it is
 PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
 PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
-PITCH_16 = ("I will send you the questions from the number [ADD CONTACT NUMBER]. It's for our close "
+PITCH_16 = ("I will send you the questions from the number 03700402752. It's for our close "
             "customers and also for any questions, you have to contact on this number 😊\n\n"
             "For payment you can use following accounts:\n\n"
             "Bank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher")  # Message 15  <--- ADD CONTACT NUMBER + BANK DETAILS HERE
