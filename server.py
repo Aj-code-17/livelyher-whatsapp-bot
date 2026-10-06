@@ -136,7 +136,7 @@ FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching
 - Customization: fully customized to her condition and food preferences (PCOS, thyroid, vegetarian, anything). Meals use everyday affordable home foods like daal, tawa cooked chicken and shami kebabs with portion control, nothing fancy to buy.
 - Results: no fixed number is guaranteed because every body reacts differently, but if she follows the plan and still sees no results, a brand new adjusted plan is made for her entirely free. Heavy gym is not required; a simple 15 minute daily walk is recommended.
 - Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
-- Team and location: main operations are based in [ADD CITY], but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
+- Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
 - Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
 - If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
 
