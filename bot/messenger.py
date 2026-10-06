@@ -37,12 +37,44 @@ class MetaClient:
                 "messaging_product": "whatsapp",
                 "to": to,
                 "type": "text",
-                "text": {"body": text[:4096]},  # WhatsApp per-message limit
+                "text": {"body": text[:4096],  # WhatsApp per-message limit
+                         # Render the first URL in the body as a preview card
+                         # (thumbnail/title from the page's Open Graph tags).
+                         "preview_url": True},
             },
             timeout=15,
         )
         if not resp.ok:
             log.error("WA send failed: %s %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+
+    def send_whatsapp_video(self, phone_number_id: str, to: str, video: str,
+                            caption: str | None = None) -> None:
+        """Sends a native WhatsApp VIDEO message (inline player + real thumbnail).
+        `video` is a public .mp4 link or a WhatsApp media id (uploaded file)."""
+        if not phone_number_id:
+            log.error("send_whatsapp_video called with no phone_number_id!")
+            return
+        media_key = "id" if video.startswith("media:") else "link"
+        payload: dict = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "video",
+            "video": {media_key: (video[6:] if media_key == "id" else video)},
+        }
+        if caption:
+            payload["video"]["caption"] = caption[:1024]
+        resp = requests.post(
+            f"{GRAPH}/{phone_number_id}/messages",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=15,
+        )
+        if not resp.ok:
+            log.error("WA video send failed: %s %s", resp.status_code, resp.text)
         resp.raise_for_status()
 
     def mark_whatsapp_read(self, phone_number_id: str, message_id: str) -> None:
