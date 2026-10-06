@@ -96,7 +96,7 @@ SET_1 = "Kindly tell us about:\n1. Aapka Current Weight aur Target Weight (kg) k
 SET_2 = "4. Pehle weight loss ke liye kya try kiya hai, crash diet, green teas, meal skipping, ya intermittent fasting and usei faida kyun hua?\n5. Aapki daily eating routine kaisi rehti hai, exactly what you usually eat in breakfast, lunch, dinner and snacking? iska answer thora detail mei dijye ga also tell the timing when you eat\n6. Kya koi hormonal blocker ya issue hai jiski wajah se weight drop nahi hota (jaise PCOS, Thyroid, ya irregular cycles)?"
 SET_3 = "For Understanding your Mood and Stress Level:\n1. 1 se 10 ke scale par aap apna daily anxiety aur mental stress kis number par rank karengi (jahan 1 ka matlab bilkul calm aur 10 ka matlab extreme overthinking ya bechaini ho)?\n2. Aapki sleep routine kaisi rehti hai, kya raat ko sote waqt mind switch off nahi hota ya neend toot-toot kar aati hai, aur subah uthne par energy bilkul low hoti hai?\n3. Aapko stress ya anxiety feel hoti hai? Ya aise lage kei jin cheezun ki pehlay enjoy krte that wo ab achi nai lagtin? Ya choti choti baat per gussa ya irritability hoti hoo?"
 MSG_END = "Thanks for sharing information Mam, we will analyse your situation and reach out to you in about 30 minutes\n\nWe will explain you in detail for FREE your issue, why it is happening and how we can help you and only once you are satisfied you can buy your Personalized plan, which will be delivered to you in 24hrs! 😇"
-ABOUT_VIDEO = "In the meantime, please watch this video to know more about us: https://your-about-video-link-here.com"  # <--- ADD YOUR ABOUT VIDEO LINK HERE
+ABOUT_VIDEO = "In the meantime, please watch this video to know more about us: https://www.instagram.com/reel/DeKqR4Uuw6D/?stkn=MWZtZ3R4OGE2ZGljdQ=="  # <--- ADD YOUR ABOUT VIDEO LINK HERE
 MSG_WAIT = ("Perfect Ma'am! 😊 Our coaches are analysing your answers right now — "
             "we'll reach out to you shortly, Inshallah.")
 INVALID_FALLBACK = ("Ma'am, could you please answer the questions above? "
@@ -147,12 +147,12 @@ PITCH_5 = "So we are setting a goal for you...we have to lose 6 to 7 kg weight i
 PITCH_6_TEMPLATE = "For that, I will make just few changes in your diet and recommend few vitamins and a tea, this will {AI_EXPLAIN} and also, we will create a mood plan for you, Insha'Allah, it will help you a lot with mood and energy"  # Message 6: structure kept, AI fills the explain slot
 PITCH_7 = "And I am confident kei Insha'Allah in next 6 weeks we can achieve these results because first because we will design it exactly according to your routine you described so it will be very easy for you to follow and also, we will always be available to you whenever you need any help😇"  # Message 7: KEEP as it is
 PITCH_8 = "I am sharing the review video of one of our client so you better know how it is... they ordered a printed version…"  # Message 8: wait for response before next
-PITCH_9 = "https://your-video-link-here.com/video.mp4"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
+PITCH_9 = "https://www.instagram.com/reel/DeKshjLOHyg/?stkn=azNhbjV1Nm56eW1h"  # Message 10 = VIDEO  <--- ADD YOUR VIDEO LINK HERE
 PITCH_10 = "let me know once you have seen it, I will share more details than .."        # Message 11: wait for reply
 PITCH_11 = "The original price is 3000 it's on 51% discount for this so it will be 1470 only...aur for 4 weeks I will be there to support for any changes insha'Allah. We will create it in 24 hrs and send to you on here but if you want printed delivered to your home, we can also do that with printing and delivery charges added😊"  # Message 12: keep as it is
 PITCH_13 = "Also Mam there are only 7 spots left in this batch aur aaj close hojaye ga….hum nei bohat detailed aur time laga ker analysis already krlia hai....lekin abhi kuch questions aur puchne hain regarding your diet preferences for making final plan...should I send you the questions?"  # Message 13: wait for reply
 PITCH_15 = "Okay I will send you the questions aapko within 24 hrs plan miljay ga insha'Allah mei questions bana ker kuch deir mei bhejti hun..."  # Message 14: keep as it is
-PITCH_16 = ("I will send you the questions from the number [ADD CONTACT NUMBER]. It's for our close "
+PITCH_16 = ("I will send you the questions from the number 03096015390. It's for our close "
             "customers and also for any questions, you have to contact on this number 😊\n\n"
             "For payment you can use following accounts:\n\n"
             "Bank: [BANK NAME]\nAccount: [ACCOUNT NUMBER]\nTitle: Livelyher")  # Message 15  <--- ADD CONTACT NUMBER + BANK DETAILS HERE
