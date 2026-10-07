@@ -2,12 +2,13 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else is v16-identical: link previews on (thumbnail cards),
-bare .mp4/media-id ships as native video, parked-ack silence, tightened
-refusal, intake sanity check, ack-hold silence + anti-repeat, updated
-intake wording, Message 12 with 24-hr delivery + printed sentence,
-5s/3s video pacing, sliding debounce with stall cap, pure-ack fast path,
-3s price-scarcity pair, repetition-aware holds with steer-back, official
+Everything else is v17-identical: off-topic deflection baked into the
+FAQ (salary/jobs/personal questions never invented), payment-instruction
+anti-repeat, link previews + native video routing, parked-ack silence,
+tightened refusal, intake sanity check, ack-hold silence + anti-repeat,
+updated intake wording, Message 12 with 24-hr + printed sentence, 5s/3s
+video pacing, sliding debounce with stall cap, pure-ack fast path, 3s
+price-scarcity pair, repetition-aware holds with steer-back, official
 master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
 typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
 intent, pause handling, pacing tiers, audio-note reply, disk persistence.
@@ -138,7 +139,7 @@ FAQ_KNOWLEDGE_BASE = """livelyher is an online weight loss and wellness coaching
 - Support: 4 weeks of WhatsApp support starting the day she receives the manual (meal swaps, motivation, guidance). Support can be extended completely free just by sharing a review of the experience.
 - Team and location: main operations are based in Gujrat, but LivelyHer works mainly as a virtual team serving clients fully online, so no clinic or office visit is ever needed. Plans are created by a professional network of multiple dieticians and psychologists.
 - Voice notes: she should kindly reply in text messages, because voice messages cannot be heard.
-- If asked something not covered here, say politely that the team will confirm it right after the free analysis. Do not invent facts."""
+- If asked something about livelyher that is not covered here, politely say the team will confirm it right after the free analysis. If the question is NOT about livelyher, her plan, or her health journey at all (for example salary, jobs, personal questions about the team, politics, jokes), politely say in one short sentence that you can only help with livelyher related questions, and gently steer back to the program. NEVER invent facts, prices, salaries, dates, or promises that are not written in these points."""
 
 # ---------------- OFFICIAL SCRIPT (Solution Explain, Messages 1..16)
 PITCH_1 = "Asslamualaikum... we are done with the analysis, let me know when you are there Ma'am?"  # Message 1: as it is, wait for reply
@@ -721,7 +722,7 @@ RULE C - REFUSAL / OPT-OUT: If she clearly declines or wants out ("no", "not int
 
 1. is_valid TRUE only for a CLEAR, UNAMBIGUOUS agreement, confirmation, or presence aimed at the bot's CURRENT open question (e.g. "I am here", "yes", "ok", "sure", "send it", "I watched it", "I am ready", "payment done").
 2. is_valid FALSE for HESITATION or DELAY ("let me think", "I need time", "not right now", "I can't purchase now", "later", "I will watch it later"), OBJECTIONS (price, trust, doubts), QUESTIONS, COMPLAINTS, or any lagging reply covered by RULE A or RULE B. Then write the reply like this:
-   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her.
+   - For a QUESTION or OBJECTION: answer it directly in 1 or 2 short, specific, smart sentences. Nothing else. Do NOT ask if she has more questions or concerns, and do NOT push her. If her question is NOT about livelyher or her plan at all (salary, jobs, personal questions about the team, politics, jokes), do NOT invent an answer and do NOT promise the team will confirm it — reply with one short polite sentence that you can only help with livelyher related questions, and steer back to the current step.
    - For HESITATION or DELAY: write one short warm sentence with zero pressure, and steer the conversation back into the process. CHECK THE HISTORY first:
      * If this is her FIRST time hesitating at this step, simply comfort her, in fresh wording.
      * If you already comforted her about waiting recently, do NOT just say "take your time" again. Comfort briefly AND gently invite her back into the CURRENT step you were on, referencing the last open point (for example: "your detailed analysis is already done Ma'am, shall I continue from there?", or "shall I send you the questions so we can start your plan today?", or "the 51 percent discount closes today Ma'am, want me to hold your spot?").
@@ -1190,6 +1191,12 @@ async def _dispatch(sender_phone: str, bot_phone_id: str, message_text: str) -> 
 
     elif stage >= 11:
         # Payment stage: never go silent again. They agreed/confirmed —
-        # ask for the payment screenshot to close the loop.
+        # ask for the payment screenshot to close the loop. But a stream of
+        # "okay"s must not re-send the identical instruction every time —
+        # one reminder, then patient silence.
         await _auto_gap(MSG_CONFIRM_PAYMENT)
-        await csend(MSG_CONFIRM_PAYMENT, dedupe=False)
+        if _last_bot_message(sender_phone) == MSG_CONFIRM_PAYMENT:
+            log.info("--> [ANTI-REPEAT] payment instruction already sent to %s — silent",
+                     sender_phone)
+        else:
+            await csend(MSG_CONFIRM_PAYMENT, dedupe=False)
