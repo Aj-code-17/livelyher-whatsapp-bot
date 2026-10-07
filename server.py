@@ -2,16 +2,16 @@
 
 Identical to server.py EXCEPT: the 30-minute analysis timer is bypassed.
 Intake end -> MSG_END -> about video -> ~12s -> PITCH_1 -> stage 6 instantly.
-Everything else is v17-identical: off-topic deflection baked into the
-FAQ (salary/jobs/personal questions never invented), payment-instruction
-anti-repeat, link previews + native video routing, parked-ack silence,
-tightened refusal, intake sanity check, ack-hold silence + anti-repeat,
-updated intake wording, Message 12 with 24-hr + printed sentence, 5s/3s
-video pacing, sliding debounce with stall cap, pure-ack fast path, 3s
-price-scarcity pair, repetition-aware holds with steer-back, official
-master-script messages, full FAQ base, AI stage-1 bridge, opt-out parking,
-typing indicator, resume-not-repeat bursts, barge-in abort, reply-lag
-intent, pause handling, pacing tiers, audio-note reply, disk persistence.
+Everything else is v18-identical: reactions silently ignored, off-topic
+deflection baked in, payment-instruction anti-repeat, link previews +
+native video routing, parked-ack silence, tightened refusal, intake
+sanity check, ack-hold silence + anti-repeat, updated intake wording,
+Message 12 with 24-hr + printed sentence, 5s/3s video pacing, sliding
+debounce with stall cap, pure-ack fast path, 3s price-scarcity pair,
+repetition-aware holds with steer-back, official master-script messages,
+full FAQ base, AI stage-1 bridge, opt-out parking, typing indicator,
+resume-not-repeat bursts, barge-in abort, reply-lag intent, pause
+handling, pacing tiers, audio-note reply, disk persistence.
 
 Use:
     uvicorn server_testing:app --host 0.0.0.0 --port 8000
@@ -492,15 +492,24 @@ async def receive_webhook(request: Request):
             bot_phone_id = (val.get("metadata") or {}).get("phone_number_id") or PHONE_NUMBER_ID
 
             for msg in val.get("messages", []):
-                if msg.get("type") != "text":
+                mtype = msg.get("type")
+                if mtype == "reaction":
+                    # An emoji tap on a message is NOT a message. Meta reports
+                    # reactions (and their removal) as webhook events — acking
+                    # them was the triple "I can understand text only" spam.
+                    # Log and stay silent, blue-tick nothing, enqueue nothing.
+                    log.info("Reaction %s from %s — ignored silently",
+                             msg.get("id"), msg.get("from"))
+                    continue
+                if mtype != "text":
                     # Never leave a voice note / image / document on "seen":
                     # acknowledge it instead of going silent.
                     if _seen_or_mark(msg.get("id", "")):
                         continue
                     log.info("Non-text message type=%s from %s — ack queued",
-                             msg.get("type"), msg.get("from"))
+                             mtype, msg.get("from"))
                     task = asyncio.create_task(_ack_nontext(
-                        msg.get("from"), bot_phone_id, msg.get("type")))
+                        msg.get("from"), bot_phone_id, mtype))
                     task.add_done_callback(_log_task_result)
                     continue
 
